@@ -6,6 +6,8 @@ use std::{convert::TryFrom, str::FromStr};
 
 use thiserror::Error;
 
+use rayon::prelude::*;
+
 use crate::*;
 
 /// A pattern that can function as either a [`Searcher`] or [`Applier`].
@@ -278,7 +280,7 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
                     Some(ids) => rewrite::search_eclasses_with_limit(
                         self,
                         egraph,
-                        ids.iter().cloned(),
+                        ids.par_iter().cloned(),
                         limit,
                     ),
                 }
@@ -286,7 +288,7 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
             ENodeOrVar::Var(_) => rewrite::search_eclasses_with_limit(
                 self,
                 egraph,
-                egraph.classes().map(|e| e.id),
+                egraph.par_classes().map(|e| e.id),
                 limit,
             ),
         }

@@ -1,6 +1,6 @@
 use pattern::apply_pat;
 use std::fmt::{self, Debug, Display};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::*;
 
@@ -129,30 +129,37 @@ pub(crate) fn search_eclasses_with_limit<'a, I, S, L, N>(
     searcher: &'a S,
     egraph: &EGraph<L, N>,
     eclasses: I,
-    mut limit: usize,
+    limit: usize,
 ) -> Vec<SearchMatches<'a, L>>
 where
     L: Language,
     N: Analysis<L>,
     S: Searcher<L, N> + ?Sized,
-    I: IntoIterator<Item = Id>,
+    I: IntoParallelIterator<Item = Id>,
 {
-    let mut ms = vec![];
-    for eclass in eclasses {
-        if limit == 0 {
-            break;
-        }
-        match searcher.search_eclass_with_limit(egraph, eclass, limit) {
-            None => continue,
-            Some(m) => {
-                let len = m.substs.len();
-                assert!(len <= limit);
-                limit -= len;
-                ms.push(m);
+    let limit = Mutex::new(limit);
+    eclasses
+        .into_par_iter()
+        .map(|eclass| {
+            let limit_copy = *limit.lock().unwrap();
+            if limit_copy == 0 {
+                return None;
             }
-        }
-    }
-    ms
+
+            match searcher.search_eclass_with_limit(egraph, eclass, limit_copy) {
+                None => None,
+                Some(mut m) => {
+                    let mut limit_locked = limit.lock().unwrap();
+                    m.substs.truncate(*limit_locked);
+                    *limit_locked -= m.substs.len();
+                    drop(limit_locked);
+
+                    Some(m)
+                }
+            }
+        })
+        .flatten()
+        .collect()
 }
 
 /// The lefthand side of a [`Rewrite`].
@@ -202,7 +209,7 @@ where
     ///
     /// [`search`]: Searcher::search
     fn search_with_limit(&self, egraph: &EGraph<L, N>, limit: usize) -> Vec<SearchMatches<L>> {
-        search_eclasses_with_limit(self, egraph, egraph.classes().map(|e| e.id), limit)
+        search_eclasses_with_limit(self, egraph, egraph.par_classes().map(|e| e.id), limit)
     }
 
     /// Returns the number of matches in the e-graph
