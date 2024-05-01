@@ -61,6 +61,15 @@ mod util;
 #[cfg_attr(feature = "serde-1", serde(transparent))]
 pub struct Id(u32);
 
+/// A key to identify [`EClass`] which can be used in parallel algorithms. Its underlying type
+/// should be the atomic version of the underlying type of [`Id`]. This type should be used
+/// only in performance-critical sections and is not a general replacement for [`Id`].
+/// [`EGraph`].
+#[derive(Default)]
+#[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde-1", serde(transparent))]
+struct AtomicId(std::sync::atomic::AtomicU32);
+
 impl From<usize> for Id {
     fn from(n: usize) -> Id {
         Id(n as u32)

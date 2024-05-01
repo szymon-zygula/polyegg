@@ -28,7 +28,7 @@ use thiserror::Error;
 ///
 /// See [`SymbolLang`] for quick-and-dirty use cases.
 #[allow(clippy::len_without_is_empty)]
-pub trait Language: Debug + Clone + Eq + Ord + Hash {
+pub trait Language: Debug + Clone + Eq + Ord + Hash + Send + Sync {
     /// Returns true if this enode matches another enode.
     /// This should only consider the operator, not the children `Id`s.
     fn matches(&self, other: &Self) -> bool;
@@ -681,9 +681,9 @@ assert_eq!(runner.egraph.find(runner.roots[0]), runner.egraph.find(just_foo));
 [`math.rs`]: https://github.com/egraphs-good/egg/blob/main/tests/math.rs
 [`prop.rs`]: https://github.com/egraphs-good/egg/blob/main/tests/prop.rs
 */
-pub trait Analysis<L: Language>: Sized {
+pub trait Analysis<L: Language>: Sized + Send + Sync {
     /// The per-[`EClass`] data for this analysis.
-    type Data: Debug;
+    type Data: Debug + Send + Sync;
 
     /// Makes a new [`Analysis`] for a given enode
     /// [`Analysis`].

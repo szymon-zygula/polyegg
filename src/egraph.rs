@@ -9,6 +9,8 @@ use ::serde::{Deserialize, Serialize};
 
 use log::*;
 
+use rayon::prelude::*;
+
 /** A data structure to keep track of equalities between expressions.
 
 Check out the [background tutorial](crate::tutorials::_01_background)
@@ -126,6 +128,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Returns an iterator over the eclasses in the egraph.
     pub fn classes(&self) -> impl ExactSizeIterator<Item = &EClass<L, N::Data>> {
         self.classes.values()
+    }
+
+    /// Returns a parallel iterator over the eclasses in the egraph.
+    pub fn par_classes(&self) -> impl ParallelIterator<Item = &EClass<L, N::Data>> {
+        self.classes.par_values()
     }
 
     /// Returns an mutating iterator over the eclasses in the egraph.

@@ -41,6 +41,7 @@ fn for_each_matching_node<L, D>(
 ) -> Result
 where
     L: Language,
+    D: Sync,
 {
     #[allow(enum_intrinsics_non_enums)]
     if eclass.nodes.len() < 50 {

@@ -7,7 +7,7 @@ use crate::*;
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
-pub struct EClass<L, D> {
+pub struct EClass<L: Sync, D: Sync> {
     /// This eclass's id.
     pub id: Id,
     /// The equivalent enodes in this equivalence class.
@@ -21,7 +21,11 @@ pub struct EClass<L, D> {
     pub(crate) parents: Vec<(L, Id)>,
 }
 
-impl<L, D> EClass<L, D> {
+impl<L, D> EClass<L, D>
+where
+    L: Sync,
+    D: Sync,
+{
     /// Returns `true` if the `eclass` is empty.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
@@ -43,7 +47,11 @@ impl<L, D> EClass<L, D> {
     }
 }
 
-impl<L: Language, D> EClass<L, D> {
+impl<L, D> EClass<L, D>
+where
+    L: Language,
+    D: Sync,
+{
     /// Iterates over the childless enodes in this eclass.
     pub fn leaves(&self) -> impl Iterator<Item = &L> {
         self.nodes.iter().filter(|&n| n.is_leaf())

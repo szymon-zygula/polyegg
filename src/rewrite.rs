@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use crate::*;
 
+use rayon::prelude::*;
+
 /// A rewrite that searches for the lefthand side and applies the righthand side.
 ///
 /// The [`rewrite!`] macro is the easiest way to create rewrites.
@@ -159,7 +161,7 @@ where
 /// matching substitutions.
 /// Right now the only significant [`Searcher`] is [`Pattern`].
 ///
-pub trait Searcher<L, N>
+pub trait Searcher<L, N>: Sync
 where
     L: Language,
     N: Analysis<L>,
@@ -191,7 +193,7 @@ where
     /// [`search_eclass`]: Searcher::search_eclass
     fn search(&self, egraph: &EGraph<L, N>) -> Vec<SearchMatches<L>> {
         egraph
-            .classes()
+            .par_classes()
             .filter_map(|e| self.search_eclass(egraph, e.id))
             .collect()
     }
