@@ -1,6 +1,9 @@
 use pattern::apply_pat;
 use std::fmt::{self, Debug, Display};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{self, AtomicUsize},
+    Arc,
+};
 
 use crate::*;
 
@@ -137,22 +140,28 @@ where
     S: Searcher<L, N> + ?Sized,
     I: IntoParallelIterator<Item = Id>,
 {
-    let limit = Mutex::new(limit);
+    const ATOMIC_ORDERING: atomic::Ordering = atomic::Ordering::SeqCst;
+    let limit = AtomicUsize::new(limit);
     eclasses
         .into_par_iter()
         .map(|eclass| {
-            let limit_copy = *limit.lock().unwrap();
-            if limit_copy == 0 {
+            let mut limit_loaded = limit.load(ATOMIC_ORDERING);
+            if limit_loaded == 0 {
                 return None;
             }
 
-            match searcher.search_eclass_with_limit(egraph, eclass, limit_copy) {
+            match searcher.search_eclass_with_limit(egraph, eclass, limit_loaded) {
                 None => None,
                 Some(mut m) => {
-                    let mut limit_locked = limit.lock().unwrap();
-                    m.substs.truncate(*limit_locked);
-                    *limit_locked -= m.substs.len();
-                    drop(limit_locked);
+                    while let Err(new_limit) = limit.compare_exchange(
+                        limit_loaded,
+                        limit_loaded - m.substs.len(),
+                        ATOMIC_ORDERING,
+                        ATOMIC_ORDERING,
+                    ) {
+                        limit_loaded = new_limit;
+                        m.substs.truncate(limit_loaded);
+                    }
 
                     Some(m)
                 }
