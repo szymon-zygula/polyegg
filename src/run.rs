@@ -134,7 +134,15 @@ println!(
 
 ```
 */
-pub struct Runner<L: Language, N: Analysis<L>, IterData = ()> {
+pub struct Runner<
+    L: Language,
+    N: Analysis<L>,
+    IterData = (),
+    Scheduler = dyn RewriteScheduler<L, N>,
+> where
+    IterData: Send + Sync,
+    Scheduler: RewriteScheduler<L, N> + ?Sized,
+{
     /// The [`EGraph`] used.
     pub egraph: EGraph<L, N>,
     /// Data accumulated over each [`Iteration`].
@@ -149,7 +157,7 @@ pub struct Runner<L: Language, N: Analysis<L>, IterData = ()> {
     /// The hooks added by the
     /// [`with_hook`](Runner::with_hook()) method, in insertion order.
     #[allow(clippy::type_complexity)]
-    pub hooks: Vec<Box<dyn FnMut(&mut Self) -> Result<(), String>>>,
+    pub hooks: Vec<Box<dyn FnMut(&mut Self) -> Result<(), String> + Send + Sync>>,
 
     // limits
     iter_limit: usize,
@@ -157,8 +165,11 @@ pub struct Runner<L: Language, N: Analysis<L>, IterData = ()> {
     time_limit: Duration,
 
     start_time: Option<Instant>,
-    scheduler: Box<dyn RewriteScheduler<L, N>>,
+    scheduler: Box<Scheduler>,
 }
+
+type ParallelRunner<L, N, IterData = ()> =
+    Runner<L, N, IterData, dyn ParallelRewriteScheduler<L, N>>;
 
 impl<L, N> Default for Runner<L, N, ()>
 where
@@ -170,11 +181,12 @@ where
     }
 }
 
-impl<L, N, IterData> Debug for Runner<L, N, IterData>
+impl<L, N, IterData, S> Debug for Runner<L, N, IterData, S>
 where
     L: Language,
     N: Analysis<L>,
-    IterData: Debug,
+    IterData: Debug + Send + Sync,
+    S: RewriteScheduler<L, N> + ?Sized,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // Use an exhaustive pattern match to ensure the Debug implementation and the struct stay in sync.
@@ -305,6 +317,10 @@ pub struct Iteration<IterData> {
 
 type RunnerResult<T> = std::result::Result<T, StopReason>;
 
+const DEFAULT_ITER_LIMIT: usize = 30;
+const DEFAULT_NODE_LIMIT: usize = 10_000;
+const DEFAULT_TIME_LIMIT: u64 = 5;
+
 impl<L, N, IterData> Runner<L, N, IterData>
 where
     L: Language,
@@ -314,9 +330,9 @@ where
     /// Create a new `Runner` with the given analysis and default parameters.
     pub fn new(analysis: N) -> Self {
         Self {
-            iter_limit: 30,
-            node_limit: 10_000,
-            time_limit: Duration::from_secs(5),
+            iter_limit: DEFAULT_ITER_LIMIT,
+            node_limit: DEFAULT_NODE_LIMIT,
+            time_limit: Duration::from_secs(DEFAULT_TIME_LIMIT),
 
             egraph: EGraph::new(analysis),
             roots: vec![],
@@ -329,6 +345,58 @@ where
         }
     }
 
+    /// Change out the [`RewriteScheduler`] used by this [`Runner`].
+    /// The default one is [`BackoffScheduler`].
+    ///
+    pub fn with_scheduler(self, scheduler: impl RewriteScheduler<L, N> + 'static) -> Self {
+        let scheduler = Box::new(scheduler);
+        Self { scheduler, ..self }
+    }
+}
+
+impl<L, N, IterData> ParallelRunner<L, N, IterData>
+where
+    L: Language,
+    N: Analysis<L>,
+    IterData: IterationData<L, N>,
+{
+    /// Create a new `Runner` with the given analysis and default parameters.
+    pub fn new_parallel(analysis: N) -> Self {
+        Self {
+            iter_limit: DEFAULT_ITER_LIMIT,
+            node_limit: DEFAULT_NODE_LIMIT,
+            time_limit: Duration::from_secs(DEFAULT_TIME_LIMIT),
+
+            egraph: EGraph::new(analysis),
+            roots: vec![],
+            iterations: vec![],
+            stop_reason: None,
+            hooks: vec![],
+
+            start_time: None,
+            scheduler: Box::new(SimpleScheduler::default()),
+        }
+    }
+
+    /// Change out the [`RewriteScheduler`] used by this [`Runner`].
+    /// The default one is [`BackoffScheduler`].
+    ///
+    pub fn with_parallel_scheduler(
+        self,
+        scheduler: impl ParallelRewriteScheduler<L, N> + 'static,
+    ) -> Self {
+        let scheduler = Box::new(scheduler);
+        Self { scheduler, ..self }
+    }
+}
+
+impl<L, N, IterData, S> Runner<L, N, IterData, S>
+where
+    L: Language,
+    N: Analysis<L>,
+    IterData: IterationData<L, N, S>,
+    S: RewriteScheduler<L, N> + ?Sized,
+{
     /// Sets the iteration limit. Default: 30
     pub fn with_iter_limit(self, iter_limit: usize) -> Self {
         Self { iter_limit, ..self }
@@ -369,18 +437,10 @@ where
     /// ```
     pub fn with_hook<F>(mut self, hook: F) -> Self
     where
-        F: FnMut(&mut Self) -> Result<(), String> + 'static,
+        F: FnMut(&mut Self) -> Result<(), String> + 'static + Send + Sync,
     {
         self.hooks.push(Box::new(hook));
         self
-    }
-
-    /// Change out the [`RewriteScheduler`] used by this [`Runner`].
-    /// The default one is [`BackoffScheduler`].
-    ///
-    pub fn with_scheduler(self, scheduler: impl RewriteScheduler<L, N> + 'static) -> Self {
-        let scheduler = Box::new(scheduler);
-        Self { scheduler, ..self }
     }
 
     /// Add an expression to the egraph to be run.
@@ -507,51 +567,63 @@ where
         }
     }
 
-    fn run_one(&mut self, rules: &[&Rewrite<L, N>]) -> Iteration<IterData> {
-        assert!(self.stop_reason.is_none());
-
-        info!("\nIteration {}", self.iterations.len());
-
-        self.try_start();
-        let mut result = self.check_limits();
-
-        let egraph_nodes = self.egraph.total_size();
-        let egraph_classes = self.egraph.number_of_classes();
-
+    fn run_hooks(&mut self, result: &mut Result<(), StopReason>) -> f64 {
         let hook_time = Instant::now();
         let mut hooks = std::mem::take(&mut self.hooks);
-        result = result.and_then(|_| {
+        *result = result.clone().and_then(|_| {
             hooks
                 .iter_mut()
                 .try_for_each(|hook| hook(self).map_err(StopReason::Other))
         });
+
         self.hooks = hooks;
-        let hook_time = hook_time.elapsed().as_secs_f64();
+        hook_time.elapsed().as_secs_f64()
+    }
 
-        let egraph_nodes_after_hooks = self.egraph.total_size();
-        let egraph_classes_after_hooks = self.egraph.number_of_classes();
-
-        let i = self.iterations.len();
-        trace!("EGraph {:?}", self.egraph.dump());
-
-        let start_time = Instant::now();
+    fn find_matches<'a>(
+        &mut self,
+        rules: &[&'a Rewrite<L, N>],
+        i: usize,
+        result: &mut Result<(), StopReason>,
+    ) -> (Vec<Vec<SearchMatches<'a, L>>>, f64) {
+        let search_time = Instant::now();
 
         let mut matches = Vec::new();
-        let mut applied = IndexMap::default();
-        result = result.and_then(|_| {
-            rules.iter().try_for_each(|rw| {
-                let ms = self.scheduler.search_rewrite(i, &self.egraph, rw);
-                matches.push(ms);
-                self.check_limits()
-            })
+        *result = result.clone().and_then(|_| {
+            let matches_result = rules
+                .iter()
+                .map(|rw| {
+                    let ms = self.scheduler.search_rewrite(i, &self.egraph, rw);
+                    self.check_limits().map(|_| ms)
+                })
+                .collect();
+
+            match matches_result {
+                Ok(matches_result) => {
+                    matches = matches_result;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         });
 
-        let search_time = start_time.elapsed().as_secs_f64();
+        let search_time = search_time.elapsed().as_secs_f64();
         info!("Search time: {}", search_time);
 
+        (matches, search_time)
+    }
+
+    fn apply_rules(
+        &mut self,
+        rules: &[&Rewrite<L, N>],
+        matches: Vec<Vec<SearchMatches<L>>>,
+        i: usize,
+        result: &mut Result<(), StopReason>,
+    ) -> (IndexMap<Symbol, usize>, f64) {
+        let mut applied = IndexMap::default();
         let apply_time = Instant::now();
 
-        result = result.and_then(|_| {
+        *result = result.clone().and_then(|_| {
             rules.iter().zip(matches).try_for_each(|(rw, ms)| {
                 let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
                 debug!("Applying {} {} times", rw.name, total_matches);
@@ -572,6 +644,10 @@ where
         let apply_time = apply_time.elapsed().as_secs_f64();
         info!("Apply time: {}", apply_time);
 
+        (applied, apply_time)
+    }
+
+    fn rebuild_egraph(&mut self, rules: &[&Rewrite<L, N>]) -> (usize, f64) {
         let rebuild_time = Instant::now();
         let n_rebuilds = self.egraph.rebuild();
         if self.egraph.are_explanations_enabled() {
@@ -585,6 +661,33 @@ where
             self.egraph.total_size(),
             self.egraph.number_of_classes()
         );
+
+        (n_rebuilds, rebuild_time)
+    }
+
+    fn run_one(&mut self, rules: &[&Rewrite<L, N>]) -> Iteration<IterData> {
+        assert!(self.stop_reason.is_none());
+
+        info!("\nIteration {}", self.iterations.len());
+
+        self.try_start();
+        let mut result = self.check_limits();
+
+        let egraph_nodes = self.egraph.total_size();
+        let egraph_classes = self.egraph.number_of_classes();
+
+        let hook_time = self.run_hooks(&mut result);
+
+        let egraph_nodes_after_hooks = self.egraph.total_size();
+        let egraph_classes_after_hooks = self.egraph.number_of_classes();
+
+        let i = self.iterations.len();
+        trace!("EGraph {:?}", self.egraph.dump());
+
+        let start_time = Instant::now();
+        let (matches, search_time) = self.find_matches(rules, i, &mut result);
+        let (applied, apply_time) = self.apply_rules(rules, matches, i, &mut result);
+        let (n_rebuilds, rebuild_time) = self.rebuild_egraph(rules);
 
         let can_be_saturated = applied.is_empty()
             && self.scheduler.can_stop(i)
@@ -656,6 +759,27 @@ fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
     }
 }
 
+impl<L, N, IterData> ParallelRunner<L, N, IterData>
+where
+    L: Language,
+    N: Analysis<L>,
+    IterData: IterationData<L, N, dyn ParallelRewriteScheduler<L, N>>,
+{
+    /// Run this `Runner` until it stops.
+    /// After this, the field
+    /// [`stop_reason`](Runner::stop_reason) is guaranteed to be set.
+    /// This function, unlike [`run`], runs all rules (both matching and rewriting) in parallel.
+    pub fn run_parallel<'a, R>(self, _rules: R) -> Self
+    where
+        R: IntoIterator<Item = &'a Rewrite<L, N>>,
+        L: 'a,
+        N: 'a,
+    {
+        // TODO
+        self
+    }
+}
+
 /** A way to customize how a [`Runner`] runs [`Rewrite`]s.
 
 This gives you a way to prevent certain [`Rewrite`]s from exploding
@@ -664,7 +788,7 @@ the [`EGraph`] and dominating how much time is spent while running the
 
 */
 #[allow(unused_variables)]
-pub trait RewriteScheduler<L, N>
+pub trait RewriteScheduler<L, N>: Send + Sync
 where
     L: Language,
     N: Analysis<L>,
@@ -709,6 +833,51 @@ where
     }
 }
 
+/** A supertrait of [`RewriteScheduler`] for rewrite schedulers which are safe to use in parallel runs.
+*/
+#[allow(unused_variables)]
+pub trait ParallelRewriteScheduler<L, N>: Send + Sync + RewriteScheduler<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    /// A hook allowing you to customize rewrite searching behavior.
+    /// Useful to implement rule management.
+    /// Unlike in [`RewriteScheduler`], this function cannot modify the scheduler via regular
+    /// methods.
+    /// If modification is necessary, interior mutability has to be used.
+    ///
+    /// Default implementation just calls
+    /// [`Rewrite::search`](Rewrite::search()).
+    fn search_rewrite_par_safe<'a>(
+        &self,
+        iteration: usize,
+        egraph: &EGraph<L, N>,
+        rewrite: &'a Rewrite<L, N>,
+    ) -> Vec<SearchMatches<'a, L>> {
+        rewrite.search(egraph)
+    }
+
+    /// A hook allowing you to customize rewrite application behavior.
+    /// Useful to implement rule management.
+    /// Unlike in [`RewriteScheduler`], this function cannot modify the scheduler via regular
+    /// methods.
+    /// If modification is necessary, interior mutability has to be used.
+    ///
+    /// Default implementation just calls
+    /// [`Rewrite::apply`](Rewrite::apply())
+    /// and returns number of new applications.
+    fn apply_rewrite_par_safe(
+        &mut self,
+        iteration: usize,
+        egraph: &mut EGraph<L, N>,
+        rewrite: &Rewrite<L, N>,
+        matches: Vec<SearchMatches<L>>,
+    ) -> usize {
+        rewrite.apply(egraph, &matches).len()
+    }
+}
+
 /// A very simple [`RewriteScheduler`] that runs every rewrite every
 /// time.
 ///
@@ -720,10 +889,17 @@ where
 /// [`with_scheduler`](Runner::with_scheduler())
 /// method.
 ///
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SimpleScheduler;
 
 impl<L, N> RewriteScheduler<L, N> for SimpleScheduler
+where
+    L: Language,
+    N: Analysis<L>,
+{
+}
+
+impl<L, N> ParallelRewriteScheduler<L, N> for SimpleScheduler
 where
     L: Language,
     N: Analysis<L>,
@@ -916,20 +1092,22 @@ where
 /// [`Runner`] is generic over the [`IterationData`] that it will be in the
 /// [`Iteration`]s, but by default it uses `()`.
 ///
-pub trait IterationData<L, N>: Sized
+pub trait IterationData<L, N, S = dyn RewriteScheduler<L, N>>: Sized + Send + Sync
 where
     L: Language,
     N: Analysis<L>,
+    S: RewriteScheduler<L, N> + ?Sized,
 {
     /// Given the current [`Runner`], make the
     /// data to be put in this [`Iteration`].
-    fn make(runner: &Runner<L, N, Self>) -> Self;
+    fn make(runner: &Runner<L, N, Self, S>) -> Self;
 }
 
-impl<L, N> IterationData<L, N> for ()
+impl<L, N, S> IterationData<L, N, S> for ()
 where
     L: Language,
     N: Analysis<L>,
+    S: RewriteScheduler<L, N> + ?Sized,
 {
-    fn make(_: &Runner<L, N, Self>) -> Self {}
+    fn make(_: &Runner<L, N, Self, S>) -> Self {}
 }
