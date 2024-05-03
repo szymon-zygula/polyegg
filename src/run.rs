@@ -1,5 +1,7 @@
 use std::fmt::{self, Debug, Formatter};
 
+use rayon::prelude::*;
+
 use log::*;
 
 use crate::*;
@@ -168,7 +170,9 @@ pub struct Runner<
     scheduler: Box<Scheduler>,
 }
 
-type ParallelRunner<L, N, IterData = ()> =
+/// Type alias for a [`Runner`] which is required to use
+/// a scheduler implementing [`ParallelRewriteScheduler`]
+pub type ParallelRunner<L, N, IterData = ()> =
     Runner<L, N, IterData, dyn ParallelRewriteScheduler<L, N>>;
 
 impl<L, N> Default for Runner<L, N, ()>
@@ -354,14 +358,25 @@ where
     }
 }
 
+impl<L, N> ParallelRunner<L, N, ()>
+where
+    L: Language,
+    N: Analysis<L> + Default,
+{
+    /// Constructs a default parallel [`Runner`]
+    pub fn default_par() -> Self {
+        Runner::new_par(N::default())
+    }
+}
+
 impl<L, N, IterData> ParallelRunner<L, N, IterData>
 where
     L: Language,
     N: Analysis<L>,
-    IterData: IterationData<L, N>,
+    IterData: IterationData<L, N, dyn ParallelRewriteScheduler<L, N>>,
 {
     /// Create a new `Runner` with the given analysis and default parameters.
-    pub fn new_parallel(analysis: N) -> Self {
+    pub fn new_par(analysis: N) -> Self {
         Self {
             iter_limit: DEFAULT_ITER_LIMIT,
             node_limit: DEFAULT_NODE_LIMIT,
@@ -459,13 +474,11 @@ where
         Self { egraph, ..self }
     }
 
-    /// Run this `Runner` until it stops.
-    /// After this, the field
-    /// [`stop_reason`](Runner::stop_reason) is guaranteed to be
-    /// set.
-    pub fn run<'a, R>(mut self, rules: R) -> Self
+    /// Runs this `Runner` with [`iter_fn`] as the function for running a single iteration
+    fn run_with_fn<'a, R, F>(mut self, rules: R, mut iter_fn: F) -> Self
     where
         R: IntoIterator<Item = &'a Rewrite<L, N>>,
+        F: FnMut(&mut Self, &[&Rewrite<L, N>]) -> Iteration<IterData>,
         L: 'a,
         N: 'a,
     {
@@ -473,7 +486,7 @@ where
         check_rules(&rules);
         self.egraph.rebuild();
         loop {
-            let iter = self.run_one(&rules);
+            let iter = iter_fn(&mut self, &rules);
             self.iterations.push(iter);
             let stop_reason = self.iterations.last().unwrap().stop_reason.clone();
             // we need to check_limits after the iteration is complete to check for iter_limit
@@ -487,6 +500,19 @@ where
         assert!(!self.iterations.is_empty());
         assert!(self.stop_reason.is_some());
         self
+    }
+
+    /// Run this `Runner` until it stops.
+    /// After this, the field
+    /// [`stop_reason`](Runner::stop_reason) is guaranteed to be
+    /// set.
+    pub fn run<'a, R>(self, rules: R) -> Self
+    where
+        R: IntoIterator<Item = &'a Rewrite<L, N>>,
+        L: 'a,
+        N: 'a,
+    {
+        self.run_with_fn(rules, Self::run_one)
     }
 
     /// Enable explanations for this runner's egraph.
@@ -765,18 +791,103 @@ where
     N: Analysis<L>,
     IterData: IterationData<L, N, dyn ParallelRewriteScheduler<L, N>>,
 {
+    fn find_matches_parallel<'a>(
+        &mut self,
+        rules: &[&'a Rewrite<L, N>],
+        i: usize,
+        result: &mut Result<(), StopReason>,
+    ) -> (Vec<Vec<SearchMatches<'a, L>>>, f64) {
+        let search_time = Instant::now();
+
+        let mut matches = Vec::new();
+        *result = result.clone().and_then(|_| {
+            let matches_result = rules
+                .par_iter()
+                .map(|rw| {
+                    let ms = self.scheduler.search_rewrite_par_safe(i, &self.egraph, rw);
+                    self.check_limits().map(|_| ms)
+                })
+                .collect();
+
+            match matches_result {
+                Ok(matches_result) => {
+                    matches = matches_result;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        });
+
+        let search_time = search_time.elapsed().as_secs_f64();
+        info!("Search time: {}", search_time);
+
+        (matches, search_time)
+    }
+
+    fn run_one_parallel(&mut self, rules: &[&Rewrite<L, N>]) -> Iteration<IterData> {
+        assert!(self.stop_reason.is_none());
+
+        info!("\nIteration {}", self.iterations.len());
+
+        self.try_start();
+        let mut result = self.check_limits();
+
+        let egraph_nodes = self.egraph.total_size();
+        let egraph_classes = self.egraph.number_of_classes();
+
+        let hook_time = self.run_hooks(&mut result);
+
+        let egraph_nodes_after_hooks = self.egraph.total_size();
+        let egraph_classes_after_hooks = self.egraph.number_of_classes();
+
+        let i = self.iterations.len();
+        trace!("EGraph {:?}", self.egraph.dump());
+
+        let start_time = Instant::now();
+        let (matches, search_time) = self.find_matches_parallel(rules, i, &mut result);
+        let (applied, apply_time) = self.apply_rules(rules, matches, i, &mut result);
+        let (n_rebuilds, rebuild_time) = self.rebuild_egraph(rules);
+
+        let can_be_saturated = applied.is_empty()
+            && self.scheduler.can_stop(i)
+            // now make sure the hooks didn't do anything
+            && (egraph_nodes == egraph_nodes_after_hooks)
+            && (egraph_classes == egraph_classes_after_hooks)
+            // now make sure that conditional rules (which might add
+            // nodes without applying) didn't do anything
+            && (egraph_nodes == self.egraph.total_size())
+            && (egraph_classes == self.egraph.number_of_classes());
+
+        if can_be_saturated {
+            result = result.and(Err(StopReason::Saturated))
+        }
+
+        Iteration {
+            applied,
+            egraph_nodes,
+            egraph_classes,
+            hook_time,
+            search_time,
+            apply_time,
+            rebuild_time,
+            n_rebuilds,
+            data: IterData::make(self),
+            total_time: start_time.elapsed().as_secs_f64(),
+            stop_reason: result.err(),
+        }
+    }
+
     /// Run this `Runner` until it stops.
     /// After this, the field
     /// [`stop_reason`](Runner::stop_reason) is guaranteed to be set.
     /// This function, unlike [`run`], runs all rules (both matching and rewriting) in parallel.
-    pub fn run_parallel<'a, R>(self, _rules: R) -> Self
+    pub fn run_parallel<'a, R>(self, rules: R) -> Self
     where
         R: IntoIterator<Item = &'a Rewrite<L, N>>,
         L: 'a,
         N: 'a,
     {
-        // TODO
-        self
+        self.run_with_fn(rules, Self::run_one_parallel)
     }
 }
 
@@ -1100,7 +1211,7 @@ where
 {
     /// Given the current [`Runner`], make the
     /// data to be put in this [`Iteration`].
-    fn make(runner: &Runner<L, N, Self, S>) -> Self;
+    fn make(_: &Runner<L, N, Self, S>) -> Self;
 }
 
 impl<L, N, S> IterationData<L, N, S> for ()
