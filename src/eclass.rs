@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::iter::ExactSizeIterator;
 
+use rayon::prelude::*;
+
 use crate::*;
 
 /// An equivalence class of enodes.
@@ -39,6 +41,11 @@ where
     /// Iterates over the enodes in this eclass.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &L> {
         self.nodes.iter()
+    }
+
+    /// Iterates over the enodes in this eclass using a parallel iterator.
+    pub fn par_iter(&self) -> impl ParallelIterator<Item = &L> {
+        self.nodes.par_iter()
     }
 
     /// Iterates over the parent enodes of this eclass.

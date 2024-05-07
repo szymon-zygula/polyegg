@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::sync::atomic::{self, AtomicBool};
+
+use rayon::prelude::*;
 
 use crate::util::HashMap;
 use crate::{Analysis, EClass, EGraph, Id, Language, RecExpr};
@@ -117,7 +120,7 @@ pub trait CostFunction<L: Language> {
     /// The `Cost` type. It only requires `PartialOrd` so you can use
     /// floating point types, but failed comparisons (`NaN`s) will
     /// result in a panic.
-    type Cost: PartialOrd + Debug + Clone;
+    type Cost: PartialOrd + Debug + Clone + Send + Sync;
 
     /// Calculates the cost of an enode whose children are `Cost`s.
     ///
@@ -144,6 +147,24 @@ pub trait CostFunction<L: Language> {
     }
 }
 
+/**
+ * A variant of [`CostFunction`] which can be used with a parallel [`Extractor`]
+ */
+pub trait ParallelCostFunction<L: Language>: CostFunction<L> + Send + Sync {
+    /// Calculates the cost of an enode whose children are `Cost`s.
+    ///
+    /// For this to work properly, your cost function should be
+    /// _monotonic_, i.e. `cost` should return a `Cost` greater than
+    /// any of the child costs of the given enode.
+    ///
+    /// The difference between this function and [`CostFunction::cost`] is that it works on `&self`
+    /// instead of `&mut self`, so any data mutated inside the implementor has to be guarded by
+    /// synchronization primitives.
+    fn cost_par_safe<C>(&self, enode: &L, costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost;
+}
+
 /** A simple [`CostFunction`] that counts total AST size.
 
 ```
@@ -155,9 +176,19 @@ assert_eq!(AstSize.cost_rec(&e), 4);
 **/
 #[derive(Debug)]
 pub struct AstSize;
+
 impl<L: Language> CostFunction<L> for AstSize {
     type Cost = usize;
-    fn cost<C>(&mut self, enode: &L, mut costs: C) -> Self::Cost
+    fn cost<C>(&mut self, enode: &L, costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        self.cost_par_safe(enode, costs)
+    }
+}
+
+impl<L: Language> ParallelCostFunction<L> for AstSize {
+    fn cost_par_safe<C>(&self, enode: &L, mut costs: C) -> Self::Cost
     where
         C: FnMut(Id) -> Self::Cost,
     {
@@ -290,6 +321,93 @@ where
             .min_by(|a, b| cmp(&a.0, &b.0))
             .unwrap_or_else(|| panic!("Can't extract, eclass is empty: {:#?}", eclass));
         cost.map(|c| (c, node.clone()))
+    }
+}
+
+impl<'a, CF, L, N> Extractor<'a, CF, L, N>
+where
+    CF: ParallelCostFunction<L>,
+    L: Language,
+    N: Analysis<L>,
+{
+    fn node_total_cost_par_safe(&self, node: &L) -> Option<CF::Cost> {
+        let eg = &self.egraph;
+        let has_cost = |id| self.costs.contains_key(&eg.find(id));
+        if node.all(has_cost) {
+            let costs = &self.costs;
+            let cost_f = |id| costs[&eg.find(id)].0.clone();
+            Some(self.cost_function.cost_par_safe(node, cost_f))
+        } else {
+            None
+        }
+    }
+
+    fn find_costs_par(&mut self) {
+        let did_something = AtomicBool::new(true);
+        // The threads only write to the variable, so relaxed ordering is sufficient
+        while did_something.load(atomic::Ordering::Relaxed) {
+            did_something.store(false, atomic::Ordering::Relaxed);
+
+            // The allocation of new `HashMap` on each iteration could be avoided here,
+            // but it is not clear how to do this without using `unsafe` or some synchronization
+            // (`self.costs` is mutated in each iteration).
+            self.costs = self
+                .egraph
+                .par_classes()
+                .filter_map(|class| {
+                    let pass = self.make_pass_par(class);
+                    match (self.costs.get(&class.id), pass) {
+                        (None, Some(new)) => {
+                            did_something.store(true, atomic::Ordering::Relaxed);
+                            Some((class.id, new))
+                        }
+                        (Some(old), Some(new)) if new.0 < old.0 => {
+                            did_something.store(true, atomic::Ordering::Relaxed);
+                            Some((class.id, new))
+                        }
+                        (Some(old), _) => Some((class.id, old.clone())),
+                        _ => None,
+                    }
+                })
+                .collect();
+        }
+
+        for class in self.egraph.classes() {
+            if !self.costs.contains_key(&class.id) {
+                log::warn!(
+                    "Failed to compute cost for eclass {}: {:?}",
+                    class.id,
+                    class.nodes
+                )
+            }
+        }
+    }
+
+    fn make_pass_par(&self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, L)> {
+        let (cost, node) = eclass
+            .par_iter()
+            .map(|n| (self.node_total_cost_par_safe(n), n))
+            .min_by(|a, b| cmp(&a.0, &b.0))
+            .unwrap_or_else(|| panic!("Can't extract, eclass is empty: {:#?}", eclass));
+        cost.map(|c| (c, node.clone()))
+    }
+
+    /// Create a new parallel `Extractor` given an `EGraph` and a
+    /// `ParallelCostFunction`.
+    ///
+    /// The extraction does all the work on creation, so this function
+    /// performs the greedy search for cheapest representative of each
+    /// eclass.
+    pub fn new_par(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
+        let costs = HashMap::default();
+        let mut extractor = Extractor {
+            costs,
+            egraph,
+            cost_function,
+        };
+        extractor.find_costs_par();
+
+        extractor
     }
 }
 

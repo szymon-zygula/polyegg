@@ -68,7 +68,7 @@ pub struct Id(u32);
 #[derive(Default)]
 #[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde-1", serde(transparent))]
-struct AtomicId(std::sync::atomic::AtomicU32);
+pub(crate) struct AtomicId(std::sync::atomic::AtomicU32);
 
 impl From<usize> for Id {
     fn from(n: usize) -> Id {

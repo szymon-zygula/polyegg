@@ -881,7 +881,7 @@ where
     /// After this, the field
     /// [`stop_reason`](Runner::stop_reason) is guaranteed to be set.
     /// This function, unlike [`run`], runs all rules (both matching and rewriting) in parallel.
-    pub fn run_parallel<'a, R>(self, rules: R) -> Self
+    pub fn run_par<'a, R>(self, rules: R) -> Self
     where
         R: IntoIterator<Item = &'a Rewrite<L, N>>,
         L: 'a,
