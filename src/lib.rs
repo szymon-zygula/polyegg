@@ -30,6 +30,8 @@ for less or more logging.
 #![doc = include_str!("../tests/simple.rs")]
 #![doc = "\n```"]
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 mod macros;
 
 #[doc(hidden)]
@@ -68,11 +70,23 @@ pub struct Id(u32);
 #[derive(Default)]
 #[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde-1", serde(transparent))]
-pub(crate) struct AtomicId(std::sync::atomic::AtomicU32);
+pub(crate) struct AtomicId(AtomicU32);
 
 impl From<usize> for Id {
     fn from(n: usize) -> Id {
         Id(n as u32)
+    }
+}
+
+impl From<usize> for AtomicId {
+    fn from(n: usize) -> AtomicId {
+        AtomicId(AtomicU32::new(n as u32))
+    }
+}
+
+impl From<u32> for AtomicId {
+    fn from(n: u32) -> AtomicId {
+        AtomicId(AtomicU32::new(n))
     }
 }
 
@@ -88,9 +102,37 @@ impl std::fmt::Debug for Id {
     }
 }
 
+impl std::fmt::Debug for AtomicId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.load(Ordering::SeqCst))
+    }
+}
+
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl std::fmt::Display for AtomicId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.load(Ordering::SeqCst))
+    }
+}
+
+impl AtomicId {
+    pub fn load_relaxed(&self) -> Id {
+        Id(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn store_relaxed(&self, new_value: Id) {
+        self.0.store(new_value.0, Ordering::Relaxed);
+    }
+}
+
+impl Clone for AtomicId {
+    fn clone(&self) -> Self {
+        Self(AtomicU32::from(self.0.load(Ordering::SeqCst)))
     }
 }
 
