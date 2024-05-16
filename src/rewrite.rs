@@ -2,12 +2,14 @@ use pattern::apply_pat;
 use std::fmt::{self, Debug, Display};
 use std::sync::{
     atomic::{self, AtomicUsize},
-    Arc,
+    mpsc, Arc,
 };
 
 use crate::*;
 
 use rayon::prelude::*;
+
+use self::egraph::EGraphManagerRequest;
 
 /// A rewrite that searches for the lefthand side and applies the righthand side.
 ///
@@ -20,19 +22,27 @@ use rayon::prelude::*;
 ///
 #[derive(Clone)]
 #[non_exhaustive]
-pub struct Rewrite<L, N> {
+pub struct Rewrite<L, N, A = dyn Applier<L, N> + Sync + Send>
+where
+    L: Language,
+    N: Analysis<L>,
+    A: Applier<L, N> + ?Sized,
+{
     /// The name of the rewrite.
     pub name: Symbol,
     /// The searcher (left-hand side) of the rewrite.
     pub searcher: Arc<dyn Searcher<L, N> + Sync + Send>,
     /// The applier (right-hand side) of the rewrite.
-    pub applier: Arc<dyn Applier<L, N> + Sync + Send>,
+    pub applier: Arc<A>,
 }
 
-impl<L, N> Debug for Rewrite<L, N>
+pub type ParallelRewrite<L, N> = Rewrite<L, N, dyn ParallelApplier<L, N>>;
+
+impl<L, N, A> Debug for Rewrite<L, N, A>
 where
     L: Language + Display + 'static,
     N: Analysis<L> + 'static,
+    A: Applier<L, N> + ?Sized,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("Rewrite");
@@ -55,7 +65,11 @@ where
     }
 }
 
-impl<L: Language, N: Analysis<L>> Rewrite<L, N> {
+impl<L, N> Rewrite<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
     /// Create a new [`Rewrite`]. You typically want to use the
     /// [`rewrite!`] macro instead.
     ///
@@ -81,7 +95,14 @@ impl<L: Language, N: Analysis<L>> Rewrite<L, N> {
             applier,
         })
     }
+}
 
+impl<L, N, A> Rewrite<L, N, A>
+where
+    L: Language,
+    N: Analysis<L>,
+    A: Applier<L, N> + ?Sized,
+{
     /// Call [`search`] on the [`Searcher`].
     ///
     /// [`search`]: Searcher::search()
@@ -124,6 +145,20 @@ impl<L: Language, N: Analysis<L>> Rewrite<L, N> {
 
         egraph.rebuild();
         ids
+    }
+}
+
+impl<L: Language, N: Analysis<L>> ParallelRewrite<L, N> {
+    /// Call [`apply_matches_par`] on the [`ParallelApplier`].
+    ///
+    /// [`apply_matches_par`]: ParallelApplier::apply_matches_par()
+    pub fn apply_par(
+        &self,
+        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        matches: &[SearchMatches<L>],
+    ) -> Vec<Id> {
+        self.applier
+            .apply_matches_par(manager_channel, matches, self.name)
     }
 }
 
@@ -397,6 +432,73 @@ where
         eclass: Id,
         subst: &Subst,
         searcher_ast: Option<&PatternAst<L>>,
+        rule_name: Symbol,
+    ) -> Vec<Id>;
+
+    /// Returns a list of variables that this Applier assumes are bound.
+    ///
+    /// `egg` will check that the corresponding `Searcher` binds those
+    /// variables.
+    /// By default this return an empty `Vec`, which basically turns off the
+    /// checking.
+    fn vars(&self) -> Vec<Var> {
+        vec![]
+    }
+}
+
+/// Works like a regular [`Applier`], but can be used for parallel rewrite application.
+/// Most methods accept different arguments than those of `Applier`,
+/// which is why [`Applier`] is not automatically implemented for structs implementing
+/// [`ParallelApplier`]. As of now, [`ParallelApplier`] does not support explanations.
+pub trait ParallelApplier<L, N>: Send + Sync + Applier<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    /// Apply many substitutions.
+    ///
+    /// This method should call [`apply_one`] for each match.
+    ///
+    /// It returns the ids resulting from the calls to [`apply_one`],
+    /// and TODO: other things related to multithreading
+    /// The default implementation does this and should suffice for
+    /// most use cases.
+    ///
+    /// [`apply_one`]: Applier::apply_one()
+    fn apply_matches_par(
+        &self,
+        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        matches: &[SearchMatches<L>],
+        rule_name: Symbol,
+    ) -> Vec<Id> {
+        matches
+            .par_iter()
+            .flat_map(|mat| {
+                mat.substs.par_iter().flat_map(move |subst| {
+                    self.apply_one_par(manager_channel, mat.eclass, subst, rule_name)
+                })
+            })
+            .collect()
+    }
+
+    /// Apply a single substitution.
+    ///
+    /// TODO: update this documentation
+    /// A [`ParallelApplier`] should add things and union them with `eclass`.
+    /// Appliers can also inspect the eclass if necessary using the
+    /// `eclass` parameter.
+    ///
+    /// This should return a list of [`Id`]s of eclasses that
+    /// were changed. There can be zero, one, or many.
+    /// When explanations mode is enabled, a [`PatternAst`] for
+    /// the searcher is provided.
+    ///
+    /// [`apply_matches`]: Applier::apply_matches()
+    fn apply_one_par(
+        &self,
+        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        eclass: Id,
+        subst: &Subst,
         rule_name: Symbol,
     ) -> Vec<Id>;
 

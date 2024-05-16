@@ -430,4 +430,40 @@ mod tests {
         let (_, best_expr) = extractor.find_best(runner.roots[0]);
         assert_eq!(best_expr, start);
     }
+
+    // #[test]
+    // fn parallel_extraction_benchmark() {
+    //     let rules: &[Rewrite<SymbolLang, ()>] =
+    //         &[rewrite!("explode"; "(meow ?a)" => "(meow (meow ?a ?a))")];
+    //
+    //     let start_expr = "(meow 42)".parse().unwrap();
+    //     print!("Running the runner... ");
+    //     use std::io::Write;
+    //     std::io::stdout().flush().unwrap();
+    //     let runner = ParallelRunner::default_par()
+    //         .with_iter_limit(2000)
+    //         .with_expr(&start_expr)
+    //         .run_par(rules);
+    //     println!("Done");
+    //     runner.print_report();
+    //
+    //     for threads in [1, 1, 2, 4, 8, 16] {
+    //         rayon::ThreadPoolBuilder::new()
+    //             .num_threads(threads)
+    //             .build()
+    //             .unwrap()
+    //             .install(|| {
+    //                 let start = Instant::now();
+    //                 let extractor = Extractor::new_par(&runner.egraph, AstSize);
+    //                 let (_, best_expr) = extractor.find_best(runner.roots[0]);
+    //                 let end = Instant::now();
+    //
+    //                 println!(
+    //                     "Threads: {threads}, Time [s]: {}",
+    //                     (end - start).as_secs_f64()
+    //                 );
+    //                 assert_eq!(best_expr, start_expr);
+    //             });
+    //     }
+    // }
 }

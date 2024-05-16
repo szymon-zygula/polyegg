@@ -369,6 +369,7 @@ where
     ) -> Vec<Id> {
         let ast = self.ast.as_ref();
         let mut id_buf = vec![0.into(); ast.len()];
+        // Id of the class containing the new node
         let id = apply_pat(&mut id_buf, ast, egraph, subst);
 
         if let Some(ast) = searcher_ast {
@@ -518,4 +519,203 @@ mod tests {
             assert_eq!(m1.substs.len(), usize::min(limit, match_size));
         }
     }
+
+    #[test]
+    fn search_with_limit_benchmark() {
+        use std::io::Write;
+        crate::init_logger();
+        let mut init_expr = RecExpr::default();
+
+        let mut last = init_expr.add(SymbolLang::leaf("0"));
+        let mut cur;
+
+        print!("Building the tree... ");
+        std::io::stdout().flush().unwrap();
+
+        for i in 1..1000000 {
+            cur = init_expr.add(SymbolLang::leaf(i.to_string()));
+            last = init_expr.add(SymbolLang::new("+", vec![cur, last]));
+        }
+        println!("Done");
+
+        let rules: Vec<Rewrite<_, ()>> = vec![
+            rewrite!("comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
+            rewrite!("assoc"; "(+ ?x (+ ?y ?z))" => "(+ (+ ?x ?y) ?z)"),
+        ];
+        print!("Running... ");
+        std::io::stdout().flush().unwrap();
+
+        let runner = Runner::default().with_expr(&init_expr).run(&rules);
+        let egraph = &runner.egraph;
+        println!("Done");
+
+        let pat = &"(+ ?x (+ ?y ?z))".parse::<Pattern<S>>().unwrap();
+
+        for threads in [1, 1, 4, 8, 16] {
+            println!("Threads: {}", threads);
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+
+            pool.install(|| {
+                let start = std::time::Instant::now();
+                pat.search(egraph);
+                let end = std::time::Instant::now();
+                println!("Whole search time: {}s", (end - start).as_secs_f64());
+
+                for limit in [10, 750, 10000, 100000] {
+                    let start = std::time::Instant::now();
+                    pat.search_with_limit(egraph, limit);
+                    let end = std::time::Instant::now();
+                    println!("Parte search time: {}s", (end - start).as_secs_f64());
+                }
+                println!();
+            });
+        }
+    }
+
+    // #[test]
+    // fn rules_benchmark() {
+    //     use std::io::Write;
+    //     crate::init_logger();
+    //     let mut init_expr = RecExpr::default();
+    //
+    //     let mut last = init_expr.add(SymbolLang::leaf("0"));
+    //     let mut cur;
+    //
+    //     print!("Building the tree... ");
+    //     std::io::stdout().flush().unwrap();
+    //
+    //     for i in 1..100000 {
+    //         cur = init_expr.add(SymbolLang::leaf((i % 10).to_string()));
+    //         if i % 2 == 0 {
+    //             last = init_expr.add(SymbolLang::new("+", vec![cur, last]));
+    //         } else {
+    //             last = init_expr.add(SymbolLang::new("-", vec![cur, last]));
+    //         }
+    //     }
+    //     println!("Done");
+    //
+    //     let rules: Vec<Rewrite<_, ()>> = vec![
+    //         rewrite!("comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
+    //         rewrite!("assoc"; "(+ ?x (+ ?y ?z))" => "(+ (+ ?x ?y) ?z)"),
+    //         rewrite!("ident"; "(+ ?x 0)" => "?x"),
+    //         rewrite!("double-neg"; "(- (- ?x))" => "?x"),
+    //         rewrite!("unary-plus"; "(+ ?x)" => "?x"),
+    //         rewrite!("same-neg"; "(- ?x ?x)" => "0"),
+    //         rewrite!("1+1"; "(+ 1 1)" => "2"),
+    //         rewrite!("1+2"; "(+ 1 2)" => "3"),
+    //         rewrite!("1+3"; "(+ 1 3)" => "4"),
+    //         rewrite!("1+4"; "(+ 1 4)" => "5"),
+    //         rewrite!("1+5"; "(+ 1 5)" => "6"),
+    //         rewrite!("1+6"; "(+ 1 6)" => "7"),
+    //         rewrite!("1+7"; "(+ 1 7)" => "8"),
+    //         rewrite!("1+8"; "(+ 1 8)" => "9"),
+    //         rewrite!("1+9"; "(+ 1 9)" => "10"),
+    //         rewrite!("2+1"; "(+ 2 1)" => "3"),
+    //         rewrite!("2+2"; "(+ 2 2)" => "4"),
+    //         rewrite!("2+3"; "(+ 2 3)" => "5"),
+    //         rewrite!("2+4"; "(+ 2 4)" => "6"),
+    //         rewrite!("2+5"; "(+ 2 5)" => "7"),
+    //         rewrite!("2+6"; "(+ 2 6)" => "8"),
+    //         rewrite!("2+7"; "(+ 2 7)" => "9"),
+    //         rewrite!("2+8"; "(+ 2 8)" => "10"),
+    //         rewrite!("2+9"; "(+ 2 9)" => "11"),
+    //         rewrite!("3+1"; "(+ 3 1)" => "4"),
+    //         rewrite!("3+2"; "(+ 3 2)" => "5"),
+    //         rewrite!("3+3"; "(+ 3 3)" => "6"),
+    //         rewrite!("3+4"; "(+ 3 4)" => "7"),
+    //         rewrite!("3+5"; "(+ 3 5)" => "8"),
+    //         rewrite!("3+6"; "(+ 3 6)" => "9"),
+    //         rewrite!("3+7"; "(+ 3 7)" => "10"),
+    //         rewrite!("3+8"; "(+ 3 8)" => "11"),
+    //         rewrite!("3+9"; "(+ 3 9)" => "12"),
+    //         rewrite!("4+1"; "(+ 4 1)" => "5"),
+    //         rewrite!("4+2"; "(+ 4 2)" => "6"),
+    //         rewrite!("4+3"; "(+ 4 3)" => "7"),
+    //         rewrite!("4+4"; "(+ 4 4)" => "8"),
+    //         rewrite!("4+5"; "(+ 4 5)" => "9"),
+    //         rewrite!("4+6"; "(+ 4 6)" => "10"),
+    //         rewrite!("4+7"; "(+ 4 7)" => "11"),
+    //         rewrite!("4+8"; "(+ 4 8)" => "12"),
+    //         rewrite!("4+9"; "(+ 4 9)" => "13"),
+    //         rewrite!("5+1"; "(+ 5 1)" => "6"),
+    //         rewrite!("5+2"; "(+ 5 2)" => "7"),
+    //         rewrite!("5+3"; "(+ 5 3)" => "8"),
+    //         rewrite!("5+4"; "(+ 5 4)" => "9"),
+    //         rewrite!("5+5"; "(+ 5 5)" => "10"),
+    //         rewrite!("5+6"; "(+ 5 6)" => "11"),
+    //         rewrite!("5+7"; "(+ 5 7)" => "12"),
+    //         rewrite!("5+8"; "(+ 5 8)" => "13"),
+    //         rewrite!("5+9"; "(+ 5 9)" => "14"),
+    //         rewrite!("6+1"; "(+ 6 1)" => "7"),
+    //         rewrite!("6+2"; "(+ 6 2)" => "8"),
+    //         rewrite!("6+3"; "(+ 6 3)" => "9"),
+    //         rewrite!("6+4"; "(+ 6 4)" => "10"),
+    //         rewrite!("6+5"; "(+ 6 5)" => "11"),
+    //         rewrite!("6+6"; "(+ 6 6)" => "12"),
+    //         rewrite!("6+7"; "(+ 6 7)" => "13"),
+    //         rewrite!("6+8"; "(+ 6 8)" => "14"),
+    //         rewrite!("6+9"; "(+ 6 9)" => "15"),
+    //         rewrite!("7+1"; "(+ 7 1)" => "8"),
+    //         rewrite!("7+2"; "(+ 7 2)" => "9"),
+    //         rewrite!("7+3"; "(+ 7 3)" => "10"),
+    //         rewrite!("7+4"; "(+ 7 4)" => "11"),
+    //         rewrite!("7+5"; "(+ 7 5)" => "12"),
+    //         rewrite!("7+6"; "(+ 7 6)" => "13"),
+    //         rewrite!("7+7"; "(+ 7 7)" => "14"),
+    //         rewrite!("7+8"; "(+ 7 8)" => "15"),
+    //         rewrite!("7+9"; "(+ 7 9)" => "16"),
+    //         rewrite!("8+1"; "(+ 8 1)" => "9"),
+    //         rewrite!("8+2"; "(+ 8 2)" => "10"),
+    //         rewrite!("8+3"; "(+ 8 3)" => "11"),
+    //         rewrite!("8+4"; "(+ 8 4)" => "12"),
+    //         rewrite!("8+5"; "(+ 8 5)" => "13"),
+    //         rewrite!("8+6"; "(+ 8 6)" => "14"),
+    //         rewrite!("8+7"; "(+ 8 7)" => "15"),
+    //         rewrite!("8+8"; "(+ 8 8)" => "16"),
+    //         rewrite!("8+9"; "(+ 8 9)" => "17"),
+    //         rewrite!("9+1"; "(+ 9 1)" => "10"),
+    //         rewrite!("9+2"; "(+ 9 2)" => "11"),
+    //         rewrite!("9+3"; "(+ 9 3)" => "12"),
+    //         rewrite!("9+4"; "(+ 9 4)" => "13"),
+    //         rewrite!("9+5"; "(+ 9 5)" => "14"),
+    //         rewrite!("9+6"; "(+ 9 6)" => "15"),
+    //         rewrite!("9+7"; "(+ 9 7)" => "16"),
+    //         rewrite!("9+8"; "(+ 9 8)" => "17"),
+    //         rewrite!("9+9"; "(+ 9 9)" => "18"),
+    //     ];
+    //
+    //     print!("Running... ");
+    //     std::io::stdout().flush().unwrap();
+    //
+    //     use crate::run::ParallelRunner;
+    //
+    //     for threads in [0, 0] {
+    //         // pool.install(|| {
+    //             println!("Threads: {threads}");
+    //             let start = Instant::now();
+    //             let runner = ParallelRunner::default_par()
+    //                 .with_node_limit(1_000_000)
+    //                 .with_expr(&init_expr)
+    //                 .run_par(&rules);
+    //             let end = Instant::now();
+    //
+    //             println!("Stop reason: {:?}", runner.stop_reason);
+    //             println!(
+    //                 "Search time: {}",
+    //                 runner.iterations.iter().map(|i| i.search_time).sum::<f64>()
+    //             );
+    //
+    //             println!(
+    //                 "Saturation time: {}s",
+    //                 (end - start).as_secs_f64()
+    //             );
+    //             println!();
+    //         // });
+    //     }
+    //
+    //     println!("Done");
+    // }
 }

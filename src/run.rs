@@ -1,10 +1,15 @@
-use std::fmt::{self, Debug, Formatter};
+use std::{
+    fmt::{self, Debug, Formatter},
+    sync::mpsc,
+};
 
 use rayon::prelude::*;
 
 use log::*;
 
-use crate::*;
+use crate::{egraph::EGraphManager, *};
+
+use self::{egraph::EGraphManagerRequest, rewrite::ParallelRewrite};
 
 /** Faciliates running rewrites over an [`EGraph`].
 
@@ -475,18 +480,19 @@ where
     }
 
     /// Runs this `Runner` with [`iter_fn`] as the function for running a single iteration
-    fn run_with_fn<'a, R, F>(mut self, rules: R, mut iter_fn: F) -> Self
+    fn run_with_fn<'a, R, A, F>(mut self, rules: R, mut iter_fn: F) -> Self
     where
-        R: IntoIterator<Item = &'a Rewrite<L, N>>,
-        F: FnMut(&mut Self, &[&Rewrite<L, N>]) -> Iteration<IterData>,
+        A: Applier<L, N> + ?Sized + 'a,
+        R: IntoIterator<Item = &'a Rewrite<L, N, A>>,
+        F: FnMut(&mut Self, &[&Rewrite<L, N, A>]) -> Iteration<IterData>,
         L: 'a,
         N: 'a,
     {
-        let rules: Vec<&Rewrite<L, N>> = rules.into_iter().collect();
+        let rules: Vec<&Rewrite<L, N, A>> = rules.into_iter().collect();
         check_rules(&rules);
         self.egraph.rebuild();
         loop {
-            let iter = iter_fn(&mut self, &rules);
+            let iter = iter_fn(&mut self, rules.as_slice());
             self.iterations.push(iter);
             let stop_reason = self.iterations.last().unwrap().stop_reason.clone();
             // we need to check_limits after the iteration is complete to check for iter_limit
@@ -646,19 +652,25 @@ where
         i: usize,
         result: &mut Result<(), StopReason>,
     ) -> (IndexMap<Symbol, usize>, f64) {
+        // How many times was each rule applied?
         let mut applied = IndexMap::default();
         let apply_time = Instant::now();
 
         *result = result.clone().and_then(|_| {
+            // For each (rule, matches)
+            // In general, this loop applies each rule everywhere where it is a good match
             rules.iter().zip(matches).try_for_each(|(rw, ms)| {
+                // each ms is a vector, each element of which are matches in a single eclass
                 let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
                 debug!("Applying {} {} times", rw.name, total_matches);
 
                 let actually_matched = self.scheduler.apply_rewrite(i, &mut self.egraph, rw, ms);
                 if actually_matched > 0 {
                     if let Some(count) = applied.get_mut(&rw.name) {
+                        // Rule already applied some times: add the new count
                         *count += actually_matched;
                     } else {
+                        // Rule applied for the first time, insert the new count
                         applied.insert(rw.name.to_owned(), actually_matched);
                     }
                     debug!("Applied {} {} times", rw.name, actually_matched);
@@ -673,7 +685,10 @@ where
         (applied, apply_time)
     }
 
-    fn rebuild_egraph(&mut self, rules: &[&Rewrite<L, N>]) -> (usize, f64) {
+    fn rebuild_egraph<A: Applier<L, N> + ?Sized>(
+        &mut self,
+        rules: &[&Rewrite<L, N, A>],
+    ) -> (usize, f64) {
         let rebuild_time = Instant::now();
         let n_rebuilds = self.egraph.rebuild();
         if self.egraph.are_explanations_enabled() {
@@ -767,7 +782,12 @@ where
     }
 }
 
-fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
+fn check_rules<L, N, A>(rules: &[&Rewrite<L, N, A>])
+where
+    L: Language,
+    N: Analysis<L>,
+    A: Applier<L, N> + ?Sized,
+{
     let mut name_counts = IndexMap::default();
     for rw in rules {
         *name_counts.entry(rw.name).or_default() += 1
@@ -785,15 +805,17 @@ fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
     }
 }
 
+fn dupa(uf: &UnionFind) {}
+
 impl<L, N, IterData> ParallelRunner<L, N, IterData>
 where
     L: Language,
     N: Analysis<L>,
     IterData: IterationData<L, N, dyn ParallelRewriteScheduler<L, N>>,
 {
-    fn find_matches_parallel<'a>(
+    fn find_matches_par<'a>(
         &mut self,
-        rules: &[&'a Rewrite<L, N>],
+        rules: &[&'a ParallelRewrite<L, N>],
         i: usize,
         result: &mut Result<(), StopReason>,
     ) -> (Vec<Vec<SearchMatches<'a, L>>>, f64) {
@@ -824,7 +846,55 @@ where
         (matches, search_time)
     }
 
-    fn run_one_parallel(&mut self, rules: &[&Rewrite<L, N>]) -> Iteration<IterData> {
+    fn apply_rules_par(
+        &mut self,
+        rules: &[&ParallelRewrite<L, N>],
+        matches: Vec<Vec<SearchMatches<L>>>,
+        i: usize,
+        result: &mut Result<(), StopReason>,
+    ) -> (IndexMap<Symbol, usize>, f64) {
+        // How many times was each rule applied?
+        let mut applied = IndexMap::default();
+        let apply_time = Instant::now();
+
+        let egraph = &mut self.egraph;
+        let (manager, manager_channel) =
+            EGraphManager::<L, N>::new(&mut egraph.memo, &mut egraph.pending, &mut egraph.classes);
+
+        let unionfind = &egraph.unionfind;
+
+        *result = result.clone().and_then(|_| {
+            // For each (rule, matches)
+            // In general, this loop applies each rule everywhere where it is a good match
+            rules.iter().zip(matches).try_for_each(|(rw, ms)| {
+                // each ms is a vector, each element of which are matches in a single eclass
+                let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
+                debug!("Applying {} {} times", rw.name, total_matches);
+
+                let actually_matched =
+                    self.scheduler
+                        .apply_rewrite_par(i, &manager_channel, rw, ms);
+                if actually_matched > 0 {
+                    if let Some(count) = applied.get_mut(&rw.name) {
+                        // Rule already applied some times: add the new count
+                        *count += actually_matched;
+                    } else {
+                        // Rule applied for the first time, insert the new count
+                        applied.insert(rw.name.to_owned(), actually_matched);
+                    }
+                    debug!("Applied {} {} times", rw.name, actually_matched);
+                }
+                self.check_limits()
+            })
+        });
+
+        let apply_time = apply_time.elapsed().as_secs_f64();
+        info!("Apply time: {}", apply_time);
+
+        (applied, apply_time)
+    }
+
+    fn run_one_par(&mut self, rules: &[&ParallelRewrite<L, N>]) -> Iteration<IterData> {
         assert!(self.stop_reason.is_none());
 
         info!("\nIteration {}", self.iterations.len());
@@ -844,8 +914,8 @@ where
         trace!("EGraph {:?}", self.egraph.dump());
 
         let start_time = Instant::now();
-        let (matches, search_time) = self.find_matches_parallel(rules, i, &mut result);
-        let (applied, apply_time) = self.apply_rules(rules, matches, i, &mut result);
+        let (matches, search_time) = self.find_matches_par(rules, i, &mut result);
+        let (applied, apply_time) = self.apply_rules_par(rules, matches, i, &mut result);
         let (n_rebuilds, rebuild_time) = self.rebuild_egraph(rules);
 
         let can_be_saturated = applied.is_empty()
@@ -883,11 +953,11 @@ where
     /// This function, unlike [`run`], runs all rules (both matching and rewriting) in parallel.
     pub fn run_par<'a, R>(self, rules: R) -> Self
     where
-        R: IntoIterator<Item = &'a Rewrite<L, N>>,
         L: 'a,
         N: 'a,
+        R: IntoIterator<Item = &'a ParallelRewrite<L, N>>,
     {
-        self.run_with_fn(rules, Self::run_one_parallel)
+        self.run_with_fn(rules, Self::run_one_par)
     }
 }
 
@@ -964,7 +1034,7 @@ where
         &self,
         iteration: usize,
         egraph: &EGraph<L, N>,
-        rewrite: &'a Rewrite<L, N>,
+        rewrite: &'a ParallelRewrite<L, N>,
     ) -> Vec<SearchMatches<'a, L>> {
         rewrite.search(egraph)
     }
@@ -974,18 +1044,19 @@ where
     /// Unlike in [`RewriteScheduler`], this function cannot modify the scheduler via regular
     /// methods.
     /// If modification is necessary, interior mutability has to be used.
+    /// Additionally, it accepts different argument so that it can use [`ParallelRewrite`].
     ///
     /// Default implementation just calls
-    /// [`Rewrite::apply`](Rewrite::apply())
+    /// [`ParallelRewrite::apply_par`](ParallelRewrite::apply_par())
     /// and returns number of new applications.
-    fn apply_rewrite_par_safe(
+    fn apply_rewrite_par(
         &mut self,
         iteration: usize,
-        egraph: &mut EGraph<L, N>,
-        rewrite: &Rewrite<L, N>,
+        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        rewrite: &ParallelRewrite<L, N>,
         matches: Vec<SearchMatches<L>>,
     ) -> usize {
-        rewrite.apply(egraph, &matches).len()
+        rewrite.apply_par(manager_channel, &matches).len()
     }
 }
 

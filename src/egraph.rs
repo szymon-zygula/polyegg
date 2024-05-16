@@ -2,6 +2,7 @@ use crate::*;
 use std::{
     borrow::BorrowMut,
     fmt::{self, Debug, Display},
+    sync::mpsc,
 };
 
 #[cfg(feature = "serde-1")]
@@ -58,15 +59,15 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     pub analysis: N,
     /// The `Explain` used to explain equivalences in this `EGraph`.
     pub(crate) explain: Option<Explain<L>>,
-    unionfind: UnionFind,
+    pub(crate) unionfind: UnionFind,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
     /// Enodes in the memo are canonicalized at each rebuild, but after rebuilding new
     /// unions can cause them to become out of date.
     #[cfg_attr(feature = "serde-1", serde(with = "vectorize"))]
-    memo: HashMap<L, Id>,
+    pub(crate) memo: HashMap<L, Id>,
     /// Nodes which need to be processed for rebuilding. The `Id` is the `Id` of the enode,
     /// not the canonical id of the eclass.
-    pending: Vec<(L, Id)>,
+    pub(crate) pending: Vec<(L, Id)>,
     analysis_pending: UniqueQueue<(L, Id)>,
     #[cfg_attr(
         feature = "serde-1",
@@ -501,12 +502,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.unionfind.find(id)
     }
 
-    /// This is private, but internals should use this whenever
-    /// possible because it does path compression.
-    fn find_mut(&mut self, id: Id) -> Id {
-        self.unionfind.find_mut(id)
-    }
-
     /// Creates a [`Dot`] to visualize this egraph. See [`Dot`].
     ///
     pub fn dot(&self) -> Dot<L, N> {
@@ -533,7 +528,7 @@ impl<L: Language, N: Analysis<L>> std::ops::Index<Id> for EGraph<L, N> {
 /// reference to the e-class.
 impl<L: Language, N: Analysis<L>> std::ops::IndexMut<Id> for EGraph<L, N> {
     fn index_mut(&mut self, id: Id) -> &mut Self::Output {
-        let id = self.find_mut(id);
+        let id = self.find(id);
         self.classes
             .get_mut(&id)
             .unwrap_or_else(|| panic!("Invalid id {}", id))
@@ -661,6 +656,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.lookup_internal(enode).map(|id| self.find(id))
     }
 
+    // Canonicalize the children of `enode` and find it in `self.memo`. May return an `id` which is
+    // not canonical
     fn lookup_internal<B>(&self, mut enode: B) -> Option<Id>
     where
         B: BorrowMut<L>,
@@ -709,16 +706,22 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// Adds an enode to the egraph and also returns the the enode's id (uncanonicalized).
     fn add_internal(&mut self, mut enode: L) -> Id {
-        let original = enode.clone();
+        let original = if self.explain.is_some() {
+            Some(enode.clone())
+        } else {
+            None
+        };
+
         if let Some(existing_id) = self.lookup_internal(&mut enode) {
             let id = self.find(existing_id);
             // when explanations are enabled, we need a new representative for this expr
             if let Some(explain) = self.explain.as_mut() {
-                if let Some(existing_explain) = explain.uncanon_memo.get(&original) {
+                if let Some(existing_explain) = explain.uncanon_memo.get(original.as_ref().unwrap())
+                {
                     *existing_explain
                 } else {
                     let new_id = self.unionfind.make_set();
-                    explain.add(original, new_id, new_id);
+                    explain.add(original.unwrap(), new_id, new_id);
                     self.unionfind.union(id, new_id);
                     explain.union(existing_id, new_id, Justification::Congruence, true);
                     new_id
@@ -729,7 +732,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         } else {
             let id = self.make_new_eclass(enode);
             if let Some(explain) = self.explain.as_mut() {
-                explain.add(original, id, id);
+                explain.add(original.unwrap(), id, id);
             }
 
             // now that we updated explanations, run the analysis for the new eclass
@@ -864,8 +867,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         N::pre_union(self, enode_id1, enode_id2, &rule);
 
         self.clean = false;
-        let mut id1 = self.find_mut(enode_id1);
-        let mut id2 = self.find_mut(enode_id2);
+        let mut id1 = self.find(enode_id1);
+        let mut id2 = self.find(enode_id2);
         if id1 == id2 {
             if let Some(Justification::Rule(_)) = rule {
                 if let Some(explain) = &mut self.explain {
@@ -915,7 +918,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// so [`Analysis::make`] and [`Analysis::merge`] will get
     /// called for other parts of the e-graph on rebuild.
     pub fn set_analysis_data(&mut self, id: Id, new_data: N::Data) {
-        let id = self.find_mut(id);
+        let id = self.find(id);
         let class = self.classes.get_mut(&id).unwrap();
         class.data = new_data;
         self.analysis_pending.extend(class.parents.iter().cloned());
@@ -977,7 +980,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             class
                 .nodes
                 .iter_mut()
-                .for_each(|n| n.update_children(|id| uf.find_mut(id)));
+                .for_each(|n| n.update_children(|id| uf.find(id)));
             class.nodes.sort_unstable();
             class.nodes.dedup();
 
@@ -1055,7 +1058,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         while !self.pending.is_empty() || !self.analysis_pending.is_empty() {
             while let Some((mut node, class)) = self.pending.pop() {
-                node.update_children(|id| self.find_mut(id));
+                node.update_children(|id| self.find(id));
                 if let Some(memo_class) = self.memo.insert(node, class) {
                     let did_something = self.perform_union(
                         memo_class,
@@ -1068,7 +1071,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             }
 
             while let Some((node, class_id)) = self.analysis_pending.pop() {
-                let class_id = self.find_mut(class_id);
+                let class_id = self.find(class_id);
                 let node_data = N::make(self, &node);
                 let class = self.classes.get_mut(&class_id).unwrap();
 
@@ -1155,7 +1158,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         n_unions
     }
 
-    pub(crate) fn check_each_explain(&self, rules: &[&Rewrite<L, N>]) -> bool {
+    pub(crate) fn check_each_explain<A: Applier<L, N> + ?Sized>(
+        &self,
+        rules: &[&Rewrite<L, N, A>],
+    ) -> bool {
         if let Some(explain) = &self.explain {
             explain.check_each_explain(rules)
         } else {
@@ -1176,6 +1182,41 @@ impl<'a, L: Language, N: Analysis<L>> Debug for EGraphDump<'a, L, N> {
             writeln!(f, "{} ({:?}): {:?}", id, self.0[id].data, nodes)?
         }
         Ok(())
+    }
+}
+
+/// Structure for managing some parts of an egraph while it is used by multiple parallel threads
+pub struct EGraphManager<'g, L: Language, N: Analysis<L>> {
+    recv_channel: mpsc::Receiver<EGraphManagerRequest>,
+    memo: &'g mut HashMap<L, Id>,
+    pending: &'g mut Vec<(L, Id)>,
+    classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
+}
+
+pub enum EGraphManagerRequest {}
+
+impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
+    pub fn new(
+        memo: &'g mut HashMap<L, Id>,
+        pending: &'g mut Vec<(L, Id)>,
+        classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
+    ) -> (Self, mpsc::Sender<EGraphManagerRequest>) {
+        let (send_channel, recv_channel) = mpsc::channel();
+        (
+            EGraphManager {
+                recv_channel,
+                memo,
+                pending,
+                classes,
+            },
+            send_channel,
+        )
+    }
+
+    pub fn manage(self) {
+        while let Ok(message) = self.recv_channel.recv() {
+            match message {}
+        }
     }
 }
 

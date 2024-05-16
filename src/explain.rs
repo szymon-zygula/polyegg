@@ -1,8 +1,8 @@
-use crate::Symbol;
 use crate::{
     util::pretty_print, Analysis, EClass, EGraph, ENodeOrVar, FromOp, HashMap, HashSet, Id,
     Language, Pattern, PatternAst, RecExpr, Rewrite, Subst, UnionFind, Var,
 };
+use crate::{Applier, Symbol};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::{self, Debug, Display, Formatter};
@@ -417,10 +417,10 @@ impl<L: Language> Explanation<L> {
     }
 
     // if the rewrite is just patterns, then it can check it
-    fn check_rewrite<'a, N: Analysis<L>>(
+    fn check_rewrite<'a, N: Analysis<L>, A: Applier<L, N> + ?Sized>(
         current: &'a FlatTerm<L>,
         next: &'a FlatTerm<L>,
-        rewrite: &Rewrite<L, N>,
+        rewrite: &Rewrite<L, N, A>,
     ) -> bool {
         if let Some(lhs) = rewrite.searcher.get_pattern_ast() {
             if let Some(rhs) = rewrite.applier.get_pattern_ast() {
@@ -974,17 +974,20 @@ impl<L: Language> Explain<L> {
         FlatTerm::new(node, children)
     }
 
-    fn make_rule_table<'a, N: Analysis<L>>(
-        rules: &[&'a Rewrite<L, N>],
-    ) -> HashMap<Symbol, &'a Rewrite<L, N>> {
-        let mut table: HashMap<Symbol, &'a Rewrite<L, N>> = Default::default();
+    fn make_rule_table<'a, N: Analysis<L>, A: Applier<L, N> + ?Sized>(
+        rules: &[&'a Rewrite<L, N, A>],
+    ) -> HashMap<Symbol, &'a Rewrite<L, N, A>> {
+        let mut table: HashMap<Symbol, &'a Rewrite<L, N, A>> = Default::default();
         for r in rules {
             table.insert(r.name, r);
         }
         table
     }
 
-    pub fn check_each_explain<N: Analysis<L>>(&self, rules: &[&Rewrite<L, N>]) -> bool {
+    pub fn check_each_explain<N: Analysis<L>, A: Applier<L, N> + ?Sized>(
+        &self,
+        rules: &[&Rewrite<L, N, A>],
+    ) -> bool {
         let rule_table = Explain::make_rule_table(rules);
         for i in 0..self.explainfind.len() {
             let explain_node = &self.explainfind[i];
