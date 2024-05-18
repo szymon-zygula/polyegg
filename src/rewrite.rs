@@ -2,14 +2,14 @@ use pattern::apply_pat;
 use std::fmt::{self, Debug, Display};
 use std::sync::{
     atomic::{self, AtomicUsize},
-    mpsc, Arc,
+    Arc,
 };
 
 use crate::*;
 
 use rayon::prelude::*;
 
-use self::egraph::EGraphManagerRequest;
+use self::egraph::EGraphChannel;
 
 /// A rewrite that searches for the lefthand side and applies the righthand side.
 ///
@@ -154,11 +154,11 @@ impl<L: Language, N: Analysis<L>> ParallelRewrite<L, N> {
     /// [`apply_matches_par`]: ParallelApplier::apply_matches_par()
     pub fn apply_par(
         &self,
-        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        egraph_channel: &EGraphChannel<L>,
         matches: &[SearchMatches<L>],
     ) -> Vec<Id> {
         self.applier
-            .apply_matches_par(manager_channel, matches, self.name)
+            .apply_matches_par(egraph_channel, matches, self.name)
     }
 }
 
@@ -467,7 +467,7 @@ where
     /// [`apply_one`]: Applier::apply_one()
     fn apply_matches_par(
         &self,
-        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        manager_channel: &EGraphChannel<L>,
         matches: &[SearchMatches<L>],
         rule_name: Symbol,
     ) -> Vec<Id> {
@@ -496,7 +496,7 @@ where
     /// [`apply_matches`]: Applier::apply_matches()
     fn apply_one_par(
         &self,
-        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        manager_channel: &EGraphChannel<L>,
         eclass: Id,
         subst: &Subst,
         rule_name: Symbol,

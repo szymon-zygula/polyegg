@@ -1,7 +1,4 @@
-use std::{
-    fmt::{self, Debug, Formatter},
-    sync::mpsc,
-};
+use std::fmt::{self, Debug, Formatter};
 
 use rayon::prelude::*;
 
@@ -9,7 +6,7 @@ use log::*;
 
 use crate::{egraph::EGraphManager, *};
 
-use self::{egraph::EGraphManagerRequest, rewrite::ParallelRewrite};
+use self::{egraph::EGraphChannel, rewrite::ParallelRewrite};
 
 /** Faciliates running rewrites over an [`EGraph`].
 
@@ -858,8 +855,12 @@ where
         let apply_time = Instant::now();
 
         let egraph = &mut self.egraph;
-        let (manager, manager_channel) =
-            EGraphManager::<L, N>::new(&mut egraph.memo, &mut egraph.pending, &mut egraph.classes);
+        let (manager, manager_channel) = EGraphManager::<L, N>::new(
+            &egraph.memo,
+            &mut egraph.pending,
+            &mut egraph.classes,
+            &egraph.unionfind,
+        );
 
         let unionfind = &egraph.unionfind;
 
@@ -1052,11 +1053,11 @@ where
     fn apply_rewrite_par(
         &mut self,
         iteration: usize,
-        manager_channel: &mpsc::Sender<EGraphManagerRequest>,
+        egraph_channel: &EGraphChannel<L>,
         rewrite: &ParallelRewrite<L, N>,
         matches: Vec<SearchMatches<L>>,
     ) -> usize {
-        rewrite.apply_par(manager_channel, &matches).len()
+        rewrite.apply_par(egraph_channel, &matches).len()
     }
 }
 

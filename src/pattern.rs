@@ -10,6 +10,9 @@ use rayon::prelude::*;
 
 use crate::*;
 
+use self::egraph::EGraphChannel;
+use self::rewrite::ParallelApplier;
+
 /// A pattern that can function as either a [`Searcher`] or [`Applier`].
 ///
 /// A [`Pattern`] is essentially a for-all quantified expression with
@@ -318,10 +321,10 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
     }
 }
 
-impl<L, A> Applier<L, A> for Pattern<L>
+impl<L, N> Applier<L, N> for Pattern<L>
 where
     L: Language,
-    A: Analysis<L>,
+    N: Analysis<L>,
 {
     fn get_pattern_ast(&self) -> Option<&PatternAst<L>> {
         Some(&self.ast)
@@ -329,7 +332,7 @@ where
 
     fn apply_matches(
         &self,
-        egraph: &mut EGraph<L, A>,
+        egraph: &mut EGraph<L, N>,
         matches: &[SearchMatches<L>],
         rule_name: Symbol,
     ) -> Vec<Id> {
@@ -361,7 +364,7 @@ where
 
     fn apply_one(
         &self,
-        egraph: &mut EGraph<L, A>,
+        egraph: &mut EGraph<L, N>,
         eclass: Id,
         subst: &Subst,
         searcher_ast: Option<&PatternAst<L>>,
@@ -408,6 +411,76 @@ pub(crate) fn apply_pat<L: Language, A: Analysis<L>>(
                 let n = e.clone().map_children(|child| ids[usize::from(child)]);
                 trace!("adding: {:?}", n);
                 egraph.add(n)
+            }
+        };
+        ids[i] = id;
+    }
+
+    *ids.last().unwrap()
+}
+
+impl<L, N> ParallelApplier<L, N> for Pattern<L>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    fn apply_matches_par(
+        &self,
+        egraph_channel: &EGraphChannel<L>,
+        matches: &[SearchMatches<L>],
+        rule_name: Symbol,
+    ) -> Vec<Id> {
+        let ast = self.ast.as_ref();
+
+        matches
+            .par_iter()
+            .flat_map(|mat| {
+                let mut added = vec![];
+                for subst in &mat.substs {
+                    let id = apply_pat_par_safe(ast, egraph, subst);
+                    if egraph.union(id, mat.eclass) {
+                        added.push(id)
+                    }
+                }
+
+                added
+            })
+            .collect()
+    }
+
+    fn apply_one_par(
+        &self,
+        egraph_channel: &EGraphChannel<L>,
+        eclass: Id,
+        subst: &Subst,
+        rule_name: Symbol,
+    ) -> Vec<Id> {
+        // Id of the class containing the new node
+        let id = apply_pat_par_safe(&self.ast.as_ref(), egraph_channel, subst);
+
+        if egraph.union(eclass, id) {
+            vec![eclass]
+        } else {
+            vec![]
+        }
+    }
+}
+
+pub(crate) fn apply_pat_par_safe<L: Language, A: Analysis<L>>(
+    pat: &[ENodeOrVar<L>],
+    egraph_channel: &EGraphChannel<L>,
+    subst: &Subst,
+) -> Id {
+    let mut ids = vec![0.into(); pat.len()];
+    trace!("apply_rec {:2?} {:?}", pat, subst);
+
+    for (i, pat_node) in pat.iter().enumerate() {
+        let id = match pat_node {
+            ENodeOrVar::Var(w) => subst[*w],
+            ENodeOrVar::ENode(e) => {
+                let n = e.clone().map_children(|child| ids[usize::from(child)]);
+                trace!("adding: {:?}", n);
+                egraph_channel.add(n)
             }
         };
         ids[i] = id;

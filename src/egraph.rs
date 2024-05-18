@@ -1187,36 +1187,143 @@ impl<'a, L: Language, N: Analysis<L>> Debug for EGraphDump<'a, L, N> {
 
 /// Structure for managing some parts of an egraph while it is used by multiple parallel threads
 pub struct EGraphManager<'g, L: Language, N: Analysis<L>> {
-    recv_channel: mpsc::Receiver<EGraphManagerRequest>,
-    memo: &'g mut HashMap<L, Id>,
+    recv_channel: mpsc::Receiver<EGraphManagerRequest<L>>,
     pending: &'g mut Vec<(L, Id)>,
     classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
+    deferred_nodes: Vec<(Id, L)>,
 }
-
-pub enum EGraphManagerRequest {}
 
 impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
     pub fn new(
-        memo: &'g mut HashMap<L, Id>,
+        memo: &'g HashMap<L, Id>,
         pending: &'g mut Vec<(L, Id)>,
         classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
-    ) -> (Self, mpsc::Sender<EGraphManagerRequest>) {
+        unionfind: &'g UnionFind,
+    ) -> (Self, EGraphChannel<'g, L>) {
         let (send_channel, recv_channel) = mpsc::channel();
         (
             EGraphManager {
                 recv_channel,
-                memo,
                 pending,
                 classes,
+                deferred_nodes: Default::default(),
             },
-            send_channel,
+            EGraphChannel::<'g, L> {
+                channel: send_channel,
+                memo,
+                unionfind,
+            },
         )
     }
 
-    pub fn manage(self) {
+    pub fn manage(&mut self) {
         while let Ok(message) = self.recv_channel.recv() {
-            match message {}
+            match message {
+                EGraphManagerRequest::AddEnode(id, enode) => {
+                    self.pending.push((enode, id));
+                    self.deferred_nodes.push((id, enode));
+                }
+            }
         }
+    }
+
+    pub fn complete(self) -> EGraphDeferredChanges<L, N> {
+        EGraphDeferredChanges {
+            deferred_nodes: self.deferred_nodes,
+            _analysis: Default::default(),
+        }
+    }
+}
+
+pub struct EGraphDeferredChanges<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    deferred_nodes: Vec<(Id, L)>,
+    _analysis: std::marker::PhantomData<N>,
+}
+
+impl<L, N> EGraphDeferredChanges<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    pub fn apply(self, egraph: &mut EGraph<L, N>) {
+        egraph.clean = false;
+        egraph.unionfind.create_promised_sets();
+
+        for (id, enode) in self.deferred_nodes {
+            let eclass = EClass {
+                id,
+                nodes: vec![enode.clone()],
+                data: N::make(egraph, &enode),
+                parents: Default::default(),
+            };
+
+            egraph.classes.insert(id, eclass);
+            egraph.memo.insert(enode, id);
+
+            N::modify(egraph, id);
+        }
+    }
+}
+
+pub enum EGraphManagerRequest<L>
+where
+    L: Language,
+{
+    AddEnode(Id, L),
+}
+
+pub struct EGraphChannel<'g, L>
+where
+    L: Language,
+{
+    channel: mpsc::Sender<EGraphManagerRequest<L>>,
+    memo: &'g HashMap<L, Id>,
+    unionfind: &'g UnionFind,
+}
+
+impl<'g, L> EGraphChannel<'g, L>
+where
+    L: Language,
+{
+    /// Queues an addition of an enode to the [`EGraph`].
+    ///
+    /// When adding an enode, to the egraph, [`add`] it performs
+    /// _hashconsing_ (sometimes called interning in other contexts).
+    ///
+    /// Hashconsing ensures that only one copy of that enode is in the egraph.
+    /// If a copy is in the egraph, then [`add`] simply returns the id of the
+    /// eclass in which the enode was found. However, if multiple threads try to add an identical
+    /// enode to the [`EGraph`], it might be added twice and deduplication will occur on the next
+    /// call to [`rebuild`](EGraph::rebuild).
+    ///
+    /// [`add`]: EGraphChannel::add()
+    pub fn add(&self, mut enode: L) -> Id {
+        enode.update_children(|id| self.unionfind.find(id));
+        let id = self.memo.get(&enode).copied();
+
+        if let Some(existing_id) = id {
+            return existing_id;
+        }
+
+        // make_new_eclass
+        let id = self.unionfind.promise_set();
+        // TODO: this id is Option
+        log::trace!("  ...adding to {}", id);
+
+        // add this enode to the parent lists of its children
+        // TODO: defer
+        enode.for_each(|child| {
+            let tup = (enode.clone(), id);
+            self[child].parents.push(tup);
+        });
+
+        self.channel.send(EGraphManagerRequest::AddEnode(id, enode));
+
+        self.unionfind.find(id)
     }
 }
 
