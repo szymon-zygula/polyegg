@@ -802,8 +802,6 @@ where
     }
 }
 
-fn dupa(uf: &UnionFind) {}
-
 impl<L, N, IterData> ParallelRunner<L, N, IterData>
 where
     L: Language,
@@ -850,31 +848,41 @@ where
         i: usize,
         result: &mut Result<(), StopReason>,
     ) -> (IndexMap<Symbol, usize>, f64) {
+        if self.egraph.are_explanations_enabled() {
+            panic!("Explanations are not supported with parallel rule application.");
+        }
+
         // How many times was each rule applied?
         let mut applied = IndexMap::default();
         let apply_time = Instant::now();
-
-        let egraph = &mut self.egraph;
-        let (manager, manager_channel) = EGraphManager::<L, N>::new(
-            &egraph.memo,
-            &mut egraph.pending,
-            &mut egraph.classes,
-            &egraph.unionfind,
-        );
-
-        let unionfind = &egraph.unionfind;
 
         *result = result.clone().and_then(|_| {
             // For each (rule, matches)
             // In general, this loop applies each rule everywhere where it is a good match
             rules.iter().zip(matches).try_for_each(|(rw, ms)| {
+                let egraph = &mut self.egraph;
+                let scheduler = &self.scheduler;
+                let (mut manager, manager_channel) = EGraphManager::<L, N>::new(
+                    &egraph.memo,
+                    &mut egraph.pending,
+                    &egraph.unionfind,
+                );
+
                 // each ms is a vector, each element of which are matches in a single eclass
                 let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
                 debug!("Applying {} {} times", rw.name, total_matches);
 
-                let actually_matched =
-                    self.scheduler
-                        .apply_rewrite_par(i, &manager_channel, rw, ms);
+                let egraph_deferred_changes = std::thread::scope(|s| {
+                    let manager_thread = s.spawn(|| {
+                        manager.manage();
+                        manager.complete()
+                    });
+
+                    scheduler.apply_rewrite_par(i, &manager_channel, rw, ms);
+                    manager_thread.join().unwrap()
+                });
+
+                let actually_matched = egraph_deferred_changes.apply(egraph);
                 if actually_matched > 0 {
                     if let Some(count) = applied.get_mut(&rw.name) {
                         // Rule already applied some times: add the new count
@@ -885,6 +893,7 @@ where
                     }
                     debug!("Applied {} {} times", rw.name, actually_matched);
                 }
+
                 self.check_limits()
             })
         });
@@ -1051,13 +1060,13 @@ where
     /// [`ParallelRewrite::apply_par`](ParallelRewrite::apply_par())
     /// and returns number of new applications.
     fn apply_rewrite_par(
-        &mut self,
+        &self,
         iteration: usize,
         egraph_channel: &EGraphChannel<L>,
         rewrite: &ParallelRewrite<L, N>,
         matches: Vec<SearchMatches<L>>,
-    ) -> usize {
-        rewrite.apply_par(egraph_channel, &matches).len()
+    ) {
+        rewrite.apply_par(egraph_channel, &matches)
     }
 }
 

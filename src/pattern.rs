@@ -428,24 +428,16 @@ where
         &self,
         egraph_channel: &EGraphChannel<L>,
         matches: &[SearchMatches<L>],
-        rule_name: Symbol,
-    ) -> Vec<Id> {
+        _rule_name: Symbol,
+    ) {
         let ast = self.ast.as_ref();
 
-        matches
-            .par_iter()
-            .flat_map(|mat| {
-                let mut added = vec![];
-                for subst in &mat.substs {
-                    let id = apply_pat_par_safe(ast, egraph, subst);
-                    if egraph.union(id, mat.eclass) {
-                        added.push(id)
-                    }
-                }
-
-                added
-            })
-            .collect()
+        matches.par_iter().for_each(|mat| {
+            mat.substs.par_iter().for_each(|subst| {
+                let id = apply_pat_par_safe::<L, N>(ast, egraph_channel, subst);
+                egraph_channel.union(id, mat.eclass);
+            });
+        });
     }
 
     fn apply_one_par(
@@ -453,24 +445,23 @@ where
         egraph_channel: &EGraphChannel<L>,
         eclass: Id,
         subst: &Subst,
-        rule_name: Symbol,
-    ) -> Vec<Id> {
+        _rule_name: Symbol,
+    ) {
         // Id of the class containing the new node
-        let id = apply_pat_par_safe(&self.ast.as_ref(), egraph_channel, subst);
-
-        if egraph.union(eclass, id) {
-            vec![eclass]
-        } else {
-            vec![]
-        }
+        let id = apply_pat_par_safe::<L, N>(&self.ast.as_ref(), egraph_channel, subst);
+        egraph_channel.union(eclass, id);
     }
 }
 
-pub(crate) fn apply_pat_par_safe<L: Language, A: Analysis<L>>(
+pub(crate) fn apply_pat_par_safe<L, N>(
     pat: &[ENodeOrVar<L>],
     egraph_channel: &EGraphChannel<L>,
     subst: &Subst,
-) -> Id {
+) -> Id
+where
+    L: Language,
+    N: Analysis<L>,
+{
     let mut ids = vec![0.into(); pat.len()];
     trace!("apply_rec {:2?} {:?}", pat, subst);
 

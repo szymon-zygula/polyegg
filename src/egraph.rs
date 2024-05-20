@@ -1189,15 +1189,15 @@ impl<'a, L: Language, N: Analysis<L>> Debug for EGraphDump<'a, L, N> {
 pub struct EGraphManager<'g, L: Language, N: Analysis<L>> {
     recv_channel: mpsc::Receiver<EGraphManagerRequest<L>>,
     pending: &'g mut Vec<(L, Id)>,
-    classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
     deferred_nodes: Vec<(Id, L)>,
+    deferred_unions: Vec<(Id, Id)>,
+    _analysis: std::marker::PhantomData<N>
 }
 
 impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
     pub fn new(
         memo: &'g HashMap<L, Id>,
         pending: &'g mut Vec<(L, Id)>,
-        classes: &'g mut HashMap<Id, EClass<L, N::Data>>,
         unionfind: &'g UnionFind,
     ) -> (Self, EGraphChannel<'g, L>) {
         let (send_channel, recv_channel) = mpsc::channel();
@@ -1205,8 +1205,9 @@ impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
             EGraphManager {
                 recv_channel,
                 pending,
-                classes,
                 deferred_nodes: Default::default(),
+                deferred_unions: Default::default(),
+                _analysis: Default::default()
             },
             EGraphChannel::<'g, L> {
                 channel: send_channel,
@@ -1219,9 +1220,12 @@ impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
     pub fn manage(&mut self) {
         while let Ok(message) = self.recv_channel.recv() {
             match message {
-                EGraphManagerRequest::AddEnode(id, enode) => {
-                    self.pending.push((enode, id));
+                EGraphManagerRequest::AddNode(id, enode) => {
+                    self.pending.push((enode.clone(), id));
                     self.deferred_nodes.push((id, enode));
+                }
+                EGraphManagerRequest::UnionClasses(id1, id2) => {
+                    self.deferred_unions.push((id1, id2));
                 }
             }
         }
@@ -1230,6 +1234,7 @@ impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
     pub fn complete(self) -> EGraphDeferredChanges<L, N> {
         EGraphDeferredChanges {
             deferred_nodes: self.deferred_nodes,
+            deferred_unions: self.deferred_unions,
             _analysis: Default::default(),
         }
     }
@@ -1241,6 +1246,7 @@ where
     N: Analysis<L>,
 {
     deferred_nodes: Vec<(Id, L)>,
+    deferred_unions: Vec<(Id, Id)>,
     _analysis: std::marker::PhantomData<N>,
 }
 
@@ -1249,7 +1255,7 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    pub fn apply(self, egraph: &mut EGraph<L, N>) {
+    pub fn apply(self, egraph: &mut EGraph<L, N>) -> usize {
         egraph.clean = false;
         egraph.unionfind.create_promised_sets();
 
@@ -1261,11 +1267,22 @@ where
                 parents: Default::default(),
             };
 
+            // add this enode to the parent lists of its children
+            enode.for_each(|child| {
+                let tup = (enode.clone(), id);
+                egraph[child].parents.push(tup);
+            });
+
             egraph.classes.insert(id, eclass);
             egraph.memo.insert(enode, id);
 
             N::modify(egraph, id);
         }
+
+        self.deferred_unions
+            .into_iter()
+            .filter(|(id1, id2)| egraph.perform_union(*id1, *id2, None, false))
+            .count()
     }
 }
 
@@ -1273,7 +1290,8 @@ pub enum EGraphManagerRequest<L>
 where
     L: Language,
 {
-    AddEnode(Id, L),
+    AddNode(Id, L),
+    UnionClasses(Id, Id),
 }
 
 pub struct EGraphChannel<'g, L>
@@ -1309,21 +1327,21 @@ where
             return existing_id;
         }
 
-        // make_new_eclass
+        // Make new eclass
         let id = self.unionfind.promise_set();
-        // TODO: this id is Option
         log::trace!("  ...adding to {}", id);
 
-        // add this enode to the parent lists of its children
-        // TODO: defer
-        enode.for_each(|child| {
-            let tup = (enode.clone(), id);
-            self[child].parents.push(tup);
-        });
-
-        self.channel.send(EGraphManagerRequest::AddEnode(id, enode));
+        self.channel
+            .send(EGraphManagerRequest::AddNode(id, enode))
+            .unwrap();
 
         self.unionfind.find(id)
+    }
+
+    pub fn union(&self, id1: Id, id2: Id) {
+        self.channel
+            .send(EGraphManagerRequest::UnionClasses(id1, id2))
+            .unwrap();
     }
 }
 

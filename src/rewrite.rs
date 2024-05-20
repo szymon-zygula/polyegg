@@ -20,7 +20,6 @@ use self::egraph::EGraphChannel;
 /// It additionally stores a name used to refer to the rewrite and a
 /// long name used for debugging.
 ///
-#[derive(Clone)]
 #[non_exhaustive]
 pub struct Rewrite<L, N, A = dyn Applier<L, N> + Sync + Send>
 where
@@ -34,6 +33,23 @@ where
     pub searcher: Arc<dyn Searcher<L, N> + Sync + Send>,
     /// The applier (right-hand side) of the rewrite.
     pub applier: Arc<A>,
+}
+
+// Required because `#[derive(Clone)]` wants `A` to implement `Clone`, even though it is
+// unnecessary
+impl<L, N, A> Clone for Rewrite<L, N, A>
+where
+    L: Language,
+    N: Analysis<L>,
+    A: Applier<L, N> + ?Sized,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            searcher: self.searcher.clone(),
+            applier: self.applier.clone(),
+        }
+    }
 }
 
 pub type ParallelRewrite<L, N> = Rewrite<L, N, dyn ParallelApplier<L, N>>;
@@ -152,11 +168,7 @@ impl<L: Language, N: Analysis<L>> ParallelRewrite<L, N> {
     /// Call [`apply_matches_par`] on the [`ParallelApplier`].
     ///
     /// [`apply_matches_par`]: ParallelApplier::apply_matches_par()
-    pub fn apply_par(
-        &self,
-        egraph_channel: &EGraphChannel<L>,
-        matches: &[SearchMatches<L>],
-    ) -> Vec<Id> {
+    pub fn apply_par(&self, egraph_channel: &EGraphChannel<L>, matches: &[SearchMatches<L>]) {
         self.applier
             .apply_matches_par(egraph_channel, matches, self.name)
     }
@@ -470,28 +482,24 @@ where
         manager_channel: &EGraphChannel<L>,
         matches: &[SearchMatches<L>],
         rule_name: Symbol,
-    ) -> Vec<Id> {
-        matches
-            .par_iter()
-            .flat_map(|mat| {
-                mat.substs.par_iter().flat_map(move |subst| {
-                    self.apply_one_par(manager_channel, mat.eclass, subst, rule_name)
-                })
+    ) {
+        matches.par_iter().for_each(|mat| {
+            mat.substs.par_iter().for_each(move |subst| {
+                self.apply_one_par(manager_channel, mat.eclass, subst, rule_name);
             })
-            .collect()
+        });
     }
 
     /// Apply a single substitution.
     ///
-    /// TODO: update this documentation
-    /// A [`ParallelApplier`] should add things and union them with `eclass`.
-    /// Appliers can also inspect the eclass if necessary using the
+    /// A [`ParallelApplier`] should add things and union them with `eclass` via sending messages
+    /// to [`EGraphChannel`].
+    /// Parallel appliers can also inspect the eclass if necessary using the
     /// `eclass` parameter.
     ///
-    /// This should return a list of [`Id`]s of eclasses that
-    /// were changed. There can be zero, one, or many.
-    /// When explanations mode is enabled, a [`PatternAst`] for
-    /// the searcher is provided.
+    /// Unlike the sequential version, this one does no return a list of [`Id`]s of eclasses that
+    /// were changed, because by the time this function returns the unions and additions do not
+    /// have to be materialized yet.
     ///
     /// [`apply_matches`]: Applier::apply_matches()
     fn apply_one_par(
@@ -500,7 +508,7 @@ where
         eclass: Id,
         subst: &Subst,
         rule_name: Symbol,
-    ) -> Vec<Id>;
+    );
 
     /// Returns a list of variables that this Applier assumes are bound.
     ///

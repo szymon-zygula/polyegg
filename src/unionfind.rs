@@ -69,7 +69,7 @@ impl UnionFind {
     /// Given two leader ids, unions the two eclasses making root1 the leader.
     /// TODO: This function will not work in a multithreaded environment, as we don't know if `root1` and
     /// `root2` are still leaders when calling `self.set_parent`!
-    pub fn union(&self, root1: Id, root2: Id) -> Id {
+    pub fn union(&mut self, root1: Id, root2: Id) -> Id {
         self.set_parent(root2, root1);
         root1
     }
