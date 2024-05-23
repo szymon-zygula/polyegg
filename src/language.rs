@@ -77,6 +77,15 @@ pub trait Language: Debug + Clone + Eq + Ord + Hash + Send + Sync {
         self.for_each_mut(|id| *id = f(*id))
     }
 
+    /// Runs a given function to replace the children if the function returns `Some(_)`.
+    fn try_update_children<F: FnMut(Id) -> Option<Id>>(&mut self, mut f: F) {
+        self.children_mut().iter_mut().for_each(|child| {
+            if let Some(new_child) = f(*child) {
+                *child = new_child;
+            }
+        });
+    }
+
     /// Creates a new enode with children determined by the given function.
     fn map_children<F: FnMut(Id) -> Id>(mut self, f: F) -> Self {
         self.update_children(f);

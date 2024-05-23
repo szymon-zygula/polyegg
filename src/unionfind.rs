@@ -66,6 +66,12 @@ impl UnionFind {
         current
     }
 
+    /// Checks if `current` is in the union-find structure. If not, returns `None`. If it is, calls
+    /// [`Self::find`].
+    pub fn try_find(&self, current: Id) -> Option<Id> {
+        (self.parents.len() > current.0 as usize).then(|| self.find(current))
+    }
+
     /// Given two leader ids, unions the two eclasses making root1 the leader.
     /// TODO: This function will not work in a multithreaded environment, as we don't know if `root1` and
     /// `root2` are still leaders when calling `self.set_parent`!

@@ -150,7 +150,10 @@ pub use {
     language::*,
     multipattern::*,
     pattern::{ENodeOrVar, Pattern, PatternAst, SearchMatches},
-    rewrite::{Applier, Condition, ConditionEqual, ConditionalApplier, Rewrite, Searcher},
+    rewrite::{
+        Applier, Condition, ConditionEqual, ConditionalApplier, ParallelApplier, ParallelRewrite,
+        Rewrite, Searcher,
+    },
     run::*,
     subst::{Subst, Var},
     util::*,

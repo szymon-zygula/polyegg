@@ -52,6 +52,7 @@ where
     }
 }
 
+/// A rewrite having [`ParallelApplier`] for its applier, instead of the default regular [`Applier`].
 pub type ParallelRewrite<L, N> = Rewrite<L, N, dyn ParallelApplier<L, N>>;
 
 impl<L, N, A> Debug for Rewrite<L, N, A>
@@ -165,10 +166,36 @@ where
 }
 
 impl<L: Language, N: Analysis<L>> ParallelRewrite<L, N> {
+    /// Create a new parallel [`Rewrite`]. You typically want to use the
+    /// [`rewrite!`] macro instead.
+    ///
+    pub fn new_par(
+        name: impl Into<Symbol>,
+        searcher: impl Searcher<L, N> + Send + Sync + 'static,
+        applier: impl ParallelApplier<L, N> + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let name = name.into();
+        let searcher = Arc::new(searcher);
+        let applier = Arc::new(applier);
+
+        let bound_vars = searcher.vars();
+        for v in applier.vars() {
+            if !bound_vars.contains(&v) {
+                return Err(format!("Rewrite {} refers to unbound var {}", name, v));
+            }
+        }
+
+        Ok(Self {
+            name,
+            searcher,
+            applier,
+        })
+    }
+
     /// Call [`apply_matches_par`] on the [`ParallelApplier`].
     ///
     /// [`apply_matches_par`]: ParallelApplier::apply_matches_par()
-    pub fn apply_par(&self, egraph_channel: &EGraphChannel<L>, matches: &[SearchMatches<L>]) {
+    pub fn apply_par(&self, egraph_channel: &EGraphChannel<L, N>, matches: &[SearchMatches<L>]) {
         self.applier
             .apply_matches_par(egraph_channel, matches, self.name)
     }
@@ -479,7 +506,7 @@ where
     /// [`apply_one`]: Applier::apply_one()
     fn apply_matches_par(
         &self,
-        manager_channel: &EGraphChannel<L>,
+        manager_channel: &EGraphChannel<L, N>,
         matches: &[SearchMatches<L>],
         rule_name: Symbol,
     ) {
@@ -504,21 +531,11 @@ where
     /// [`apply_matches`]: Applier::apply_matches()
     fn apply_one_par(
         &self,
-        manager_channel: &EGraphChannel<L>,
+        manager_channel: &EGraphChannel<L, N>,
         eclass: Id,
         subst: &Subst,
         rule_name: Symbol,
     );
-
-    /// Returns a list of variables that this Applier assumes are bound.
-    ///
-    /// `egg` will check that the corresponding `Searcher` binds those
-    /// variables.
-    /// By default this return an empty `Vec`, which basically turns off the
-    /// checking.
-    fn vars(&self) -> Vec<Var> {
-        vec![]
-    }
 }
 
 /// An [`Applier`] that checks a [`Condition`] before applying.
@@ -578,6 +595,30 @@ where
     }
 }
 
+impl<C, A, N, L> ParallelApplier<L, N> for ConditionalApplier<C, A>
+where
+    L: Language,
+    C: ConstCondition<L, N> + Send + Sync,
+    A: ParallelApplier<L, N>,
+    N: Analysis<L>,
+{
+    fn apply_one_par(
+        &self,
+        manager_channel: &EGraphChannel<L, N>,
+        eclass: Id,
+        subst: &Subst,
+        rule_name: Symbol,
+    ) {
+        if self
+            .condition
+            .check_const(manager_channel.egraph, eclass, subst)
+        {
+            self.applier
+                .apply_one_par(manager_channel, eclass, subst, rule_name);
+        }
+    }
+}
+
 /// A condition to check in a [`ConditionalApplier`].
 ///
 /// See the [`ConditionalApplier`] docs.
@@ -608,6 +649,28 @@ where
     fn vars(&self) -> Vec<Var> {
         vec![]
     }
+}
+
+/// A condition to check in a [`ConditionalApplier`] without modyfing the egraph.
+///
+/// See the [`ConditionalApplier`] docs.
+///
+/// Notably, any function ([`Fn`]) that doesn't mutate other state
+/// and matches the signature of [`check`] implements [`Condition`].
+///
+/// [`check`]: Condition::check()
+/// [`Fn`]: std::ops::Fn
+pub trait ConstCondition<L, N>: Condition<L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    /// Check a condition.
+    ///
+    /// `eclass` is the eclass [`Id`] where the match (`subst`) occured.
+    /// If this is true, then the [`ConditionalApplier`] will fire.
+    ///
+    fn check_const(&self, egraph: &EGraph<L, N>, eclass: Id, subst: &Subst) -> bool;
 }
 
 impl<L, F, N> Condition<L, N> for F

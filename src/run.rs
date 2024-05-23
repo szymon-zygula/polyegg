@@ -862,16 +862,13 @@ where
             rules.iter().zip(matches).try_for_each(|(rw, ms)| {
                 let egraph = &mut self.egraph;
                 let scheduler = &self.scheduler;
-                let (mut manager, manager_channel) = EGraphManager::<L, N>::new(
-                    &egraph.memo,
-                    &mut egraph.pending,
-                    &egraph.unionfind,
-                );
+                let (mut manager, manager_channel) = EGraphManager::<L, N>::new(&egraph);
 
                 // each ms is a vector, each element of which are matches in a single eclass
                 let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
                 debug!("Applying {} {} times", rw.name, total_matches);
 
+                // TODO: replace with rayon task
                 let egraph_deferred_changes = std::thread::scope(|s| {
                     let manager_thread = s.spawn(|| {
                         manager.manage();
@@ -879,6 +876,9 @@ where
                     });
 
                     scheduler.apply_rewrite_par(i, &manager_channel, rw, ms);
+                    // TODO: replace drop with something nicer. Required to close the channel and
+                    // force manager_thread to join
+                    drop(manager_channel);
                     manager_thread.join().unwrap()
                 });
 
@@ -1062,7 +1062,7 @@ where
     fn apply_rewrite_par(
         &self,
         iteration: usize,
-        egraph_channel: &EGraphChannel<L>,
+        egraph_channel: &EGraphChannel<L, N>,
         rewrite: &ParallelRewrite<L, N>,
         matches: Vec<SearchMatches<L>>,
     ) {

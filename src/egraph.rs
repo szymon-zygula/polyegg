@@ -1186,33 +1186,26 @@ impl<'a, L: Language, N: Analysis<L>> Debug for EGraphDump<'a, L, N> {
 }
 
 /// Structure for managing some parts of an egraph while it is used by multiple parallel threads
-pub struct EGraphManager<'g, L: Language, N: Analysis<L>> {
+pub struct EGraphManager<L: Language, N: Analysis<L>> {
     recv_channel: mpsc::Receiver<EGraphManagerRequest<L>>,
-    pending: &'g mut Vec<(L, Id)>,
     deferred_nodes: Vec<(Id, L)>,
     deferred_unions: Vec<(Id, Id)>,
-    _analysis: std::marker::PhantomData<N>
+    _analysis: std::marker::PhantomData<N>,
 }
 
-impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
-    pub fn new(
-        memo: &'g HashMap<L, Id>,
-        pending: &'g mut Vec<(L, Id)>,
-        unionfind: &'g UnionFind,
-    ) -> (Self, EGraphChannel<'g, L>) {
+impl<L: Language, N: Analysis<L>> EGraphManager<L, N> {
+    pub fn new<'g>(egraph: &'g EGraph<L, N>) -> (Self, EGraphChannel<'g, L, N>) {
         let (send_channel, recv_channel) = mpsc::channel();
         (
             EGraphManager {
                 recv_channel,
-                pending,
                 deferred_nodes: Default::default(),
                 deferred_unions: Default::default(),
-                _analysis: Default::default()
+                _analysis: Default::default(),
             },
-            EGraphChannel::<'g, L> {
+            EGraphChannel::<'g, L, N> {
                 channel: send_channel,
-                memo,
-                unionfind,
+                egraph,
             },
         )
     }
@@ -1221,7 +1214,6 @@ impl<'g, L: Language, N: Analysis<L>> EGraphManager<'g, L, N> {
         while let Ok(message) = self.recv_channel.recv() {
             match message {
                 EGraphManagerRequest::AddNode(id, enode) => {
-                    self.pending.push((enode.clone(), id));
                     self.deferred_nodes.push((id, enode));
                 }
                 EGraphManagerRequest::UnionClasses(id1, id2) => {
@@ -1260,6 +1252,8 @@ where
         egraph.unionfind.create_promised_sets();
 
         for (id, enode) in self.deferred_nodes {
+            egraph.pending.push((enode.clone(), id));
+
             let eclass = EClass {
                 id,
                 nodes: vec![enode.clone()],
@@ -1294,18 +1288,19 @@ where
     UnionClasses(Id, Id),
 }
 
-pub struct EGraphChannel<'g, L>
+pub struct EGraphChannel<'g, L, N>
 where
     L: Language,
+    N: Analysis<L>,
 {
     channel: mpsc::Sender<EGraphManagerRequest<L>>,
-    memo: &'g HashMap<L, Id>,
-    unionfind: &'g UnionFind,
+    pub egraph: &'g EGraph<L, N>,
 }
 
-impl<'g, L> EGraphChannel<'g, L>
+impl<'g, L, N> EGraphChannel<'g, L, N>
 where
     L: Language,
+    N: Analysis<L>,
 {
     /// Queues an addition of an enode to the [`EGraph`].
     ///
@@ -1320,22 +1315,23 @@ where
     ///
     /// [`add`]: EGraphChannel::add()
     pub fn add(&self, mut enode: L) -> Id {
-        enode.update_children(|id| self.unionfind.find(id));
-        let id = self.memo.get(&enode).copied();
+        // Cannot use `find`, because children may refer to classes which don't exist yet.
+        enode.try_update_children(|id| self.egraph.unionfind.try_find(id));
+        let id = self.egraph.memo.get(&enode).copied();
 
         if let Some(existing_id) = id {
             return existing_id;
         }
 
         // Make new eclass
-        let id = self.unionfind.promise_set();
+        let id = self.egraph.unionfind.promise_set();
         log::trace!("  ...adding to {}", id);
 
         self.channel
             .send(EGraphManagerRequest::AddNode(id, enode))
             .unwrap();
 
-        self.unionfind.find(id)
+        id
     }
 
     pub fn union(&self, id1: Id, id2: Id) {
