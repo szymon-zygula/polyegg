@@ -869,20 +869,22 @@ where
                 debug!("Applying {} {} times", rw.name, total_matches);
 
                 // TODO: replace with rayon task
-                let egraph_deferred_changes = std::thread::scope(|s| {
-                    let manager_thread = s.spawn(|| {
+                let mut egraph_deferred_changes = None;
+
+                rayon::scope(|s| {
+                    s.spawn(|_| {
                         manager.manage();
-                        manager.complete()
+                        egraph_deferred_changes = Some(manager.complete());
                     });
 
-                    scheduler.apply_rewrite_par(i, &manager_channel, rw, ms);
-                    // TODO: replace drop with something nicer. Required to close the channel and
-                    // force manager_thread to join
-                    drop(manager_channel);
-                    manager_thread.join().unwrap()
+                    s.spawn(|_| {
+                        scheduler.apply_rewrite_par(i, &manager_channel, rw, ms);
+                        // force manager_thread to join
+                        drop(manager_channel);
+                    });
                 });
 
-                let actually_matched = egraph_deferred_changes.apply(egraph);
+                let actually_matched = egraph_deferred_changes.unwrap().apply(egraph);
                 if actually_matched > 0 {
                     if let Some(count) = applied.get_mut(&rw.name) {
                         // Rule already applied some times: add the new count
