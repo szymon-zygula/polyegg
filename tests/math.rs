@@ -1,5 +1,7 @@
 use egg::{rewrite as rw, rewrite_par as rwp, *};
 use ordered_float::NotNan;
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 
 pub type EGraph = egg::EGraph<Math, ConstantFold>;
 pub type Rewrite = egg::Rewrite<Math, ConstantFold>;
@@ -11,10 +13,10 @@ define_language! {
         "d" = Diff([Id; 2]),
         "i" = Integral([Id; 2]),
 
-        "+" = Add([Id; 2]),
-        "-" = Sub([Id; 2]),
-        "*" = Mul([Id; 2]),
-        "/" = Div([Id; 2]),
+        "+" =   Add([Id; 2]),
+        "-" =   Sub([Id; 2]),
+        "*" =   Mul([Id; 2]),
+        "/" =   Div([Id; 2]),
         "pow" = Pow([Id; 2]),
         "ln" = Ln(Id),
         "sqrt" = Sqrt(Id),
@@ -24,6 +26,72 @@ define_language! {
 
         Constant(Constant),
         Symbol(Symbol),
+    }
+}
+
+fn random_expr(size: usize, rng: &mut impl Rng) -> RecExpr<Math> {
+    if size == 1 {
+        let mut expr = RecExpr::default();
+        if rng.gen_bool(0.5) {
+            let symbol = match rng.gen_range(0..3) {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+
+            expr.add(Math::Symbol(symbol.parse().unwrap()));
+        } else {
+            expr.add(Math::Constant(
+                NotNan::new(rng.gen_range(-1.0..1.0)).unwrap(),
+            ));
+        };
+
+        return expr;
+    }
+
+    if size == 2 {
+        let mut expr = random_expr(1, rng);
+        if rng.gen_bool(0.5) {
+            expr.add(Math::Sin(0.into()));
+        } else {
+            expr.add(Math::Cos(0.into()));
+        }
+        
+        return expr;
+    }
+
+    if rng.gen_bool(0.1) {
+        let mut expr = random_expr(size - 1, rng);
+        if rng.gen_bool(0.5) {
+            expr.add(Math::Sin((expr.len() - 1).into()));
+        } else {
+            expr.add(Math::Cos((expr.len() - 1).into()));
+        }
+
+        return expr;
+    } else {
+        let left_size = (size - 1) / 2;
+        let right_size = size - 1 - left_size;
+
+        let left = random_expr(left_size, rng);
+        let right = random_expr(right_size, rng);
+        let mut unified = left.concat(&right);
+
+        let left_id = Id::from(left_size - 1);
+        let right_id = Id::from(unified.len() - 1);
+
+        let to_add = match rng.gen_range(0..5) {
+            0 => Math::Add([left_id, right_id]),
+            1 => Math::Sub([left_id, right_id]),
+            2 => Math::Mul([left_id, right_id]),
+            3 => Math::Div([left_id, right_id]),
+            _ => Math::Pow([left_id, right_id]),
+        };
+
+        unified.add(to_add);
+
+        return unified;
     }
 }
 
@@ -402,23 +470,23 @@ egg::test_fn! {
     @check |r: Runner<Math, ()>| assert_eq!(r.egraph.number_of_classes(), 127)
 }
 
-egg::test_fn! {
+egg::test_fn_par! {
     #[should_panic(expected = "Could not prove goal 0")]
-    math_fail, rules(),
+    math_fail, rules_par(),
     "(+ x y)" => "(/ x y)"
 }
 
-egg::test_fn! {math_simplify_add, rules(), "(+ x (+ x (+ x x)))" => "(* 4 x)" }
-egg::test_fn! {math_powers, rules(), "(* (pow 2 x) (pow 2 y))" => "(pow 2 (+ x y))"}
+egg::test_fn_par! {math_simplify_add, rules_par(), "(+ x (+ x (+ x x)))" => "(* 4 x)" }
+egg::test_fn_par! {math_powers, rules_par(), "(* (pow 2 x) (pow 2 y))" => "(pow 2 (+ x y))"}
 
-egg::test_fn! {
-    math_simplify_const, rules(),
+egg::test_fn_par! {
+    math_simplify_const, rules_par(),
     "(+ 1 (- a (* (- 2 1) a)))" => "1"
 }
 
-egg::test_fn! {
-    math_simplify_root, rules(),
-    runner = Runner::default().with_node_limit(75_000),
+egg::test_fn_par! {
+    math_simplify_root, rules_par(),
+    runner = ParallelRunner::default_par().with_node_limit(75_000),
     r#"
     (/ 1
        (- (/ (+ 1 (sqrt five))
@@ -429,31 +497,30 @@ egg::test_fn! {
     "(/ 1 (sqrt five))"
 }
 
-egg::test_fn! {
-    math_simplify_factor, rules(),
+egg::test_fn_par! {
+    math_simplify_factor, rules_par(),
     "(* (+ x 3) (+ x 1))"
     =>
     "(+ (+ (* x x) (* 4 x)) 3)"
 }
 
-egg::test_fn! {math_diff_same,      rules(), "(d x x)" => "1"}
-egg::test_fn! {math_diff_different, rules(), "(d x y)" => "0"}
-egg::test_fn! {math_diff_simple1,   rules(), "(d x (+ 1 (* 2 x)))" => "2"}
-egg::test_fn! {math_diff_simple2,   rules(), "(d x (+ 1 (* y x)))" => "y"}
-egg::test_fn! {math_diff_ln,        rules(), "(d x (ln x))" => "(/ 1 x)"}
+egg::test_fn_par! {math_diff_same,      rules_par(), "(d x x)" => "1"}
+egg::test_fn_par! {math_diff_different, rules_par(), "(d x y)" => "0"}
+egg::test_fn_par! {math_diff_simple1,   rules_par(), "(d x (+ 1 (* 2 x)))" => "2"}
+egg::test_fn_par! {math_diff_simple2,   rules_par(), "(d x (+ 1 (* y x)))" => "y"}
+egg::test_fn_par! {math_diff_ln,        rules_par(), "(d x (ln x))" => "(/ 1 x)"}
 
-egg::test_fn! {
-    diff_power_simple, rules(),
+egg::test_fn_par! {
+    diff_power_simple, rules_par(),
     "(d x (pow x 3))" => "(* 3 (pow x 2))"
 }
 
-egg::test_fn! {
-    diff_power_harder, rules(),
-    runner = Runner::default()
+egg::test_fn_par! {
+    diff_power_harder, rules_par(),
+    runner = ParallelRunner::default_par()
         .with_time_limit(std::time::Duration::from_secs(10))
         .with_iter_limit(60)
         .with_node_limit(100_000)
-        .with_explanations_enabled()
         // HACK this needs to "see" the end expression
         .with_expr(&"(* x (- (* 3 x) 14))".parse().unwrap()),
     "(d x (- (pow x 3) (* 7 (pow x 2))))"
@@ -461,29 +528,29 @@ egg::test_fn! {
     "(* x (- (* 3 x) 14))"
 }
 
-egg::test_fn! {
-    integ_one, rules(), "(i 1 x)" => "x"
+egg::test_fn_par! {
+    integ_one, rules_par(), "(i 1 x)" => "x"
 }
 
-egg::test_fn! {
-    integ_sin, rules(), "(i (cos x) x)" => "(sin x)"
+egg::test_fn_par! {
+    integ_sin, rules_par(), "(i (cos x) x)" => "(sin x)"
 }
 
-egg::test_fn! {
-    integ_x, rules(), "(i (pow x 1) x)" => "(/ (pow x 2) 2)"
+egg::test_fn_par! {
+    integ_x, rules_par(), "(i (pow x 1) x)" => "(/ (pow x 2) 2)"
 }
 
-egg::test_fn! {
-    integ_part1, rules(), "(i (* x (cos x)) x)" => "(+ (* x (sin x)) (cos x))"
+egg::test_fn_par! {
+    integ_part1, rules_par(), "(i (* x (cos x)) x)" => "(+ (* x (sin x)) (cos x))"
 }
 
-egg::test_fn! {
-    integ_part2, rules(),
+egg::test_fn_par! {
+    integ_part2, rules_par(),
     "(i (* (cos x) x) x)" => "(+ (* x (sin x)) (cos x))"
 }
 
-egg::test_fn! {
-    integ_part3, rules(), "(i (ln x) x)" => "(- (* x (ln x)) x)"
+egg::test_fn_par! {
+    integ_part3, rules_par(), "(i (ln x) x)" => "(- (* x (ln x)) x)"
 }
 
 #[test]
@@ -731,4 +798,12 @@ fn test_medium_intersect() {
         egraph3.add_expr(&"(ln k)".parse().unwrap()),
         egraph3.add_expr(&"(+ (* k pi) (* k pi))".parse().unwrap())
     );
+}
+
+#[test]
+fn random_exprs() {
+    let mut rng = ChaCha8Rng::seed_from_u64(1);
+    let expr = random_expr(10000, &mut rng);
+    println!("{}", expr.len());
+    println!("{}", expr.pretty(100));
 }
