@@ -218,6 +218,38 @@ where
     egraph
 }
 
+pub fn parallel_bench<L, N>(
+    rules: Vec<ParallelRewrite<L, N>>,
+    init_expr: &RecExpr<L>,
+    threads: &[usize],
+) where
+    L: Language,
+    N: Analysis<L> + Default,
+{
+    for &threads in threads {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+
+        pool.install(|| {
+            println!("Testing {threads} threads.");
+            print!("Saturating... ");
+            std::io::stdout().flush().unwrap();
+
+            let runner = ParallelRunner::default_par()
+                .with_node_limit(100_000_000)
+                .with_time_limit(std::time::Duration::from_secs_f64(150.0))
+                .with_expr(&init_expr)
+                .run_par(&rules);
+
+            println!("Done");
+            runner.print_report();
+            println!();
+        });
+    }
+}
+
 /// Utility to make a test proving expressions equivalent
 ///
 /// # Example
