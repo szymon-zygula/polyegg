@@ -434,8 +434,9 @@ where
 
         matches.par_iter().for_each(|mat| {
             mat.substs.par_iter().for_each(|subst| {
-                let egraph_channel = egraph_channel.clone();
-                let id = apply_pat_par_safe::<L, N>(ast, &egraph_channel, subst);
+                let mut egraph_channel = egraph_channel.clone();
+                let id = apply_pat_par_safe::<L, N>(ast, &mut egraph_channel, subst);
+                egraph_channel.flush_additions();
                 egraph_channel.union(id, mat.eclass);
             });
         });
@@ -449,14 +450,14 @@ where
         _rule_name: Symbol,
     ) {
         // Id of the class containing the new node
-        let id = apply_pat_par_safe::<L, N>(&self.ast.as_ref(), egraph_channel, subst);
+        let id = apply_pat_par_safe::<L, N>(&self.ast.as_ref(), &mut egraph_channel.clone(), subst);
         egraph_channel.union(eclass, id);
     }
 }
 
 pub(crate) fn apply_pat_par_safe<L, N>(
     pat: &[ENodeOrVar<L>],
-    egraph_channel: &EGraphChannel<L, N>,
+    egraph_channel: &mut EGraphChannel<L, N>,
     subst: &Subst,
 ) -> Id
 where
@@ -465,6 +466,8 @@ where
 {
     let mut ids = vec![0.into(); pat.len()];
     trace!("apply_rec {:2?} {:?}", pat, subst);
+
+    egraph_channel.reserve_additions_buffer(pat.len());
 
     for (i, pat_node) in pat.iter().enumerate() {
         let id = match pat_node {

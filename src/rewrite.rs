@@ -512,7 +512,7 @@ where
     ) {
         matches.par_iter().for_each(|mat| {
             mat.substs.par_iter().for_each(move |subst| {
-                self.apply_one_par(manager_channel, mat.eclass, subst, rule_name);
+                self.apply_one_par(&manager_channel.clone(), mat.eclass, subst, rule_name);
             })
         });
     }

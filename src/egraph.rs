@@ -1205,6 +1205,7 @@ impl<L: Language, N: Analysis<L>> EGraphManager<L, N> {
             },
             EGraphChannel::<'g, L, N> {
                 channel: send_channel,
+                buffered_nodes: Default::default(),
                 egraph,
             },
         )
@@ -1213,8 +1214,8 @@ impl<L: Language, N: Analysis<L>> EGraphManager<L, N> {
     pub fn manage(&mut self) {
         while let Ok(message) = self.recv_channel.recv() {
             match message {
-                EGraphManagerRequest::AddNode(id, enode) => {
-                    self.deferred_nodes.push((id, enode));
+                EGraphManagerRequest::AddNodes(nodes) => {
+                    self.deferred_nodes.extend_from_slice(&nodes);
                 }
                 EGraphManagerRequest::UnionClasses(id1, id2) => {
                     self.deferred_unions.push((id1, id2));
@@ -1284,7 +1285,7 @@ pub enum EGraphManagerRequest<L>
 where
     L: Language,
 {
-    AddNode(Id, L),
+    AddNodes(Vec<(Id, L)>),
     UnionClasses(Id, Id),
 }
 
@@ -1294,6 +1295,7 @@ where
     N: Analysis<L>,
 {
     channel: mpsc::Sender<EGraphManagerRequest<L>>,
+    buffered_nodes: Vec<(Id, L)>,
     pub egraph: &'g EGraph<L, N>,
 }
 
@@ -1305,6 +1307,7 @@ where
     fn clone(&self) -> Self {
         Self {
             channel: self.channel.clone(),
+            buffered_nodes: Default::default(),
             egraph: self.egraph,
         }
     }
@@ -1327,7 +1330,7 @@ where
     /// call to [`rebuild`](EGraph::rebuild).
     ///
     /// [`add`]: EGraphChannel::add()
-    pub fn add(&self, mut enode: L) -> Id {
+    pub fn add(&mut self, mut enode: L) -> Id {
         // Cannot use `find`, because children may refer to classes which don't exist yet.
         enode.try_update_children(|id| self.egraph.unionfind.try_find(id));
         let id = self.egraph.memo.get(&enode).copied();
@@ -1338,11 +1341,9 @@ where
 
         // Make new eclass
         let id = self.egraph.unionfind.promise_set();
-        log::trace!("  ...adding to {}", id);
+        log::trace!("  ...buffering addition to {}", id);
 
-        self.channel
-            .send(EGraphManagerRequest::AddNode(id, enode))
-            .unwrap();
+        self.buffered_nodes.push((id, enode));
 
         id
     }
@@ -1350,6 +1351,17 @@ where
     pub fn union(&self, id1: Id, id2: Id) {
         self.channel
             .send(EGraphManagerRequest::UnionClasses(id1, id2))
+            .unwrap();
+    }
+
+    pub fn reserve_additions_buffer(&mut self, capacity: usize) {
+        self.buffered_nodes.reserve(capacity);
+    }
+
+    pub fn flush_additions(&mut self) {
+        let old_buffer = std::mem::replace(&mut self.buffered_nodes, Default::default());
+        self.channel
+            .send(EGraphManagerRequest::AddNodes(old_buffer))
             .unwrap();
     }
 }
