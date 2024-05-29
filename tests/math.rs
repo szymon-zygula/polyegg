@@ -1,4 +1,4 @@
-use egg::{rewrite as rw, *};
+use egg::{rewrite as rw, rewrite_par as rwp, *};
 use ordered_float::NotNan;
 
 pub type EGraph = egg::EGraph<Math, ConstantFold>;
@@ -104,38 +104,149 @@ impl Analysis<Math> for ConstantFold {
     }
 }
 
-fn is_const_or_distinct_var(v: &str, w: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
-    let v = v.parse().unwrap();
-    let w = w.parse().unwrap();
-    move |egraph, _, subst| {
-        egraph.find(subst[v]) != egraph.find(subst[w])
-            && (egraph[subst[v]].data.is_some()
-                || egraph[subst[v]]
+struct IsConstOrDistinctVar {
+    v: Var,
+    w: Var,
+}
+
+impl IsConstOrDistinctVar {
+    pub fn new(v: &str, w: &str) -> Self {
+        Self {
+            v: v.parse().unwrap(),
+            w: w.parse().unwrap(),
+        }
+    }
+}
+
+impl Condition<Math, ConstantFold> for IsConstOrDistinctVar {
+    fn check(
+        &self,
+        egraph: &mut egg::EGraph<Math, ConstantFold>,
+        eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        self.check_const(egraph, eclass, subst)
+    }
+}
+
+impl ConstCondition<Math, ConstantFold> for IsConstOrDistinctVar {
+    fn check_const(
+        &self,
+        egraph: &egg::EGraph<Math, ConstantFold>,
+        _eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        egraph.find(subst[self.v]) != egraph.find(subst[self.w])
+            && (egraph[subst[self.v]].data.is_some()
+                || egraph[subst[self.v]]
                     .nodes
                     .iter()
                     .any(|n| matches!(n, Math::Symbol(..))))
     }
 }
 
-fn is_const(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
-    let var = var.parse().unwrap();
-    move |egraph, _, subst| egraph[subst[var]].data.is_some()
+struct IsConst {
+    var: Var,
 }
 
-fn is_sym(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
-    let var = var.parse().unwrap();
-    move |egraph, _, subst| {
-        egraph[subst[var]]
+impl IsConst {
+    pub fn new(var: &str) -> Self {
+        Self {
+            var: var.parse().unwrap(),
+        }
+    }
+}
+
+impl Condition<Math, ConstantFold> for IsConst {
+    fn check(
+        &self,
+        egraph: &mut egg::EGraph<Math, ConstantFold>,
+        eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        self.check_const(egraph, eclass, subst)
+    }
+}
+
+impl ConstCondition<Math, ConstantFold> for IsConst {
+    fn check_const(
+        &self,
+        egraph: &egg::EGraph<Math, ConstantFold>,
+        _eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        egraph[subst[self.var]].data.is_some()
+    }
+}
+
+struct IsSym {
+    var: Var,
+}
+
+impl IsSym {
+    pub fn new(var: &str) -> Self {
+        Self {
+            var: var.parse().unwrap(),
+        }
+    }
+}
+
+impl Condition<Math, ConstantFold> for IsSym {
+    fn check(
+        &self,
+        egraph: &mut egg::EGraph<Math, ConstantFold>,
+        eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        self.check_const(egraph, eclass, subst)
+    }
+}
+
+impl ConstCondition<Math, ConstantFold> for IsSym {
+    fn check_const(
+        &self,
+        egraph: &egg::EGraph<Math, ConstantFold>,
+        _eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        egraph[subst[self.var]]
             .nodes
             .iter()
             .any(|n| matches!(n, Math::Symbol(..)))
     }
 }
 
-fn is_not_zero(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
-    let var = var.parse().unwrap();
-    move |egraph, _, subst| {
-        if let Some(n) = &egraph[subst[var]].data {
+struct IsNotZero {
+    var: Var,
+}
+
+impl IsNotZero {
+    pub fn new(var: &str) -> Self {
+        Self {
+            var: var.parse().unwrap(),
+        }
+    }
+}
+
+impl Condition<Math, ConstantFold> for IsNotZero {
+    fn check(
+        &self,
+        egraph: &mut egg::EGraph<Math, ConstantFold>,
+        eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        self.check_const(egraph, eclass, subst)
+    }
+}
+
+impl ConstCondition<Math, ConstantFold> for IsNotZero {
+    fn check_const(
+        &self,
+        egraph: &egg::EGraph<Math, ConstantFold>,
+        _eclass: Id,
+        subst: &Subst,
+    ) -> bool {
+        if let Some(n) = &egraph[subst[self.var]].data {
             *(n.0) != 0.0
         } else {
             true
@@ -151,7 +262,7 @@ pub fn rules() -> Vec<Rewrite> { vec![
     rw!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
 
     rw!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
-    rw!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if is_not_zero("?b")),
+    rw!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
     // rw!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
     // rw!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if is_not_zero("?b")),
 
@@ -163,22 +274,22 @@ pub fn rules() -> Vec<Rewrite> { vec![
     rw!("mul-one";  "?a" => "(* ?a 1)"),
 
     rw!("cancel-sub"; "(- ?a ?a)" => "0"),
-    rw!("cancel-div"; "(/ ?a ?a)" => "1" if is_not_zero("?a")),
+    rw!("cancel-div"; "(/ ?a ?a)" => "1" if IsNotZero::new("?a")),
 
     rw!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
     rw!("factor"    ; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
 
     rw!("pow-mul"; "(* (pow ?a ?b) (pow ?a ?c))" => "(pow ?a (+ ?b ?c))"),
     rw!("pow0"; "(pow ?x 0)" => "1"
-        if is_not_zero("?x")),
+        if IsNotZero::new("?x")),
     rw!("pow1"; "(pow ?x 1)" => "?x"),
     rw!("pow2"; "(pow ?x 2)" => "(* ?x ?x)"),
     rw!("pow-recip"; "(pow ?x -1)" => "(/ 1 ?x)"
-        if is_not_zero("?x")),
-    rw!("recip-mul-div"; "(* ?x (/ 1 ?x))" => "1" if is_not_zero("?x")),
+        if IsNotZero::new("?x")),
+    rw!("recip-mul-div"; "(* ?x (/ 1 ?x))" => "1" if IsNotZero::new("?x")),
 
-    rw!("d-variable"; "(d ?x ?x)" => "1" if is_sym("?x")),
-    rw!("d-constant"; "(d ?x ?c)" => "0" if is_sym("?x") if is_const_or_distinct_var("?c", "?x")),
+    rw!("d-variable"; "(d ?x ?x)" => "1" if IsSym::new("?x")),
+    rw!("d-constant"; "(d ?x ?c)" => "0" if IsSym::new("?x") if IsConstOrDistinctVar::new("?c", "?x")),
 
     rw!("d-add"; "(d ?x (+ ?a ?b))" => "(+ (d ?x ?a) (d ?x ?b))"),
     rw!("d-mul"; "(d ?x (* ?a ?b))" => "(+ (* ?a (d ?x ?b)) (* ?b (d ?x ?a)))"),
@@ -186,7 +297,7 @@ pub fn rules() -> Vec<Rewrite> { vec![
     rw!("d-sin"; "(d ?x (sin ?x))" => "(cos ?x)"),
     rw!("d-cos"; "(d ?x (cos ?x))" => "(* -1 (sin ?x))"),
 
-    rw!("d-ln"; "(d ?x (ln ?x))" => "(/ 1 ?x)" if is_not_zero("?x")),
+    rw!("d-ln"; "(d ?x (ln ?x))" => "(/ 1 ?x)" if IsNotZero::new("?x")),
 
     rw!("d-power";
         "(d ?x (pow ?f ?g))" =>
@@ -195,18 +306,85 @@ pub fn rules() -> Vec<Rewrite> { vec![
                   (/ ?g ?f))
                (* (d ?x ?g)
                   (ln ?f))))"
-        if is_not_zero("?f")
-        if is_not_zero("?g")
+        if IsNotZero::new("?f")
+        if IsNotZero::new("?g")
     ),
 
     rw!("i-one"; "(i 1 ?x)" => "?x"),
     rw!("i-power-const"; "(i (pow ?x ?c) ?x)" =>
-        "(/ (pow ?x (+ ?c 1)) (+ ?c 1))" if is_const("?c")),
+        "(/ (pow ?x (+ ?c 1)) (+ ?c 1))" if IsConst::new("?c")),
     rw!("i-cos"; "(i (cos ?x) ?x)" => "(sin ?x)"),
     rw!("i-sin"; "(i (sin ?x) ?x)" => "(* -1 (cos ?x))"),
     rw!("i-sum"; "(i (+ ?f ?g) ?x)" => "(+ (i ?f ?x) (i ?g ?x))"),
     rw!("i-dif"; "(i (- ?f ?g) ?x)" => "(- (i ?f ?x) (i ?g ?x))"),
     rw!("i-parts"; "(i (* ?a ?b) ?x)" =>
+        "(- (* ?a (i ?b ?x)) (i (* (d ?x ?a) (i ?b ?x)) ?x))"),
+]}
+
+#[rustfmt::skip]
+pub fn rules_par() -> Vec<ParallelRewrite<Math, ConstantFold>> { vec![
+    rwp!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
+    rwp!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
+    rwp!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+    rwp!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+
+    rwp!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
+    rwp!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
+    // rwp!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
+    // rwp!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if is_not_zero("?b")),
+
+    rwp!("zero-add"; "(+ ?a 0)" => "?a"),
+    rwp!("zero-mul"; "(* ?a 0)" => "0"),
+    rwp!("one-mul";  "(* ?a 1)" => "?a"),
+
+    rwp!("add-zero"; "?a" => "(+ ?a 0)"),
+    rwp!("mul-one";  "?a" => "(* ?a 1)"),
+
+    rwp!("cancel-sub"; "(- ?a ?a)" => "0"),
+    rwp!("cancel-div"; "(/ ?a ?a)" => "1" if IsNotZero::new("?a")),
+
+    rwp!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
+    rwp!("factor"    ; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
+
+    rwp!("pow-mul"; "(* (pow ?a ?b) (pow ?a ?c))" => "(pow ?a (+ ?b ?c))"),
+    rwp!("pow0"; "(pow ?x 0)" => "1"
+        if IsNotZero::new("?x")),
+    rwp!("pow1"; "(pow ?x 1)" => "?x"),
+    rwp!("pow2"; "(pow ?x 2)" => "(* ?x ?x)"),
+    rwp!("pow-recip"; "(pow ?x -1)" => "(/ 1 ?x)"
+        if IsNotZero::new("?x")),
+    rwp!("recip-mul-div"; "(* ?x (/ 1 ?x))" => "1" if IsNotZero::new("?x")),
+
+    rwp!("d-variable"; "(d ?x ?x)" => "1" if IsSym::new("?x")),
+    rwp!("d-constant"; "(d ?x ?c)" => "0" if IsSym::new("?x") if IsConstOrDistinctVar::new("?c", "?x")),
+
+    rwp!("d-add"; "(d ?x (+ ?a ?b))" => "(+ (d ?x ?a) (d ?x ?b))"),
+    rwp!("d-mul"; "(d ?x (* ?a ?b))" => "(+ (* ?a (d ?x ?b)) (* ?b (d ?x ?a)))"),
+
+    rwp!("d-sin"; "(d ?x (sin ?x))" => "(cos ?x)"),
+    rwp!("d-cos"; "(d ?x (cos ?x))" => "(* -1 (sin ?x))"),
+
+    rwp!("d-ln"; "(d ?x (ln ?x))" => "(/ 1 ?x)" if IsNotZero::new("?x")),
+
+    rwp!("d-power";
+        "(d ?x (pow ?f ?g))" =>
+        "(* (pow ?f ?g)
+            (+ (* (d ?x ?f)
+                  (/ ?g ?f))
+               (* (d ?x ?g)
+                  (ln ?f))))"
+        if IsNotZero::new("?f")
+        if IsNotZero::new("?g")
+    ),
+
+    rwp!("i-one"; "(i 1 ?x)" => "?x"),
+    rwp!("i-power-const"; "(i (pow ?x ?c) ?x)" =>
+        "(/ (pow ?x (+ ?c 1)) (+ ?c 1))" if IsConst::new("?c")),
+    rwp!("i-cos"; "(i (cos ?x) ?x)" => "(sin ?x)"),
+    rwp!("i-sin"; "(i (sin ?x) ?x)" => "(* -1 (cos ?x))"),
+    rwp!("i-sum"; "(i (+ ?f ?g) ?x)" => "(+ (i ?f ?x) (i ?g ?x))"),
+    rwp!("i-dif"; "(i (- ?f ?g) ?x)" => "(- (i ?f ?x) (i ?g ?x))"),
+    rwp!("i-parts"; "(i (* ?a ?b) ?x)" =>
         "(- (* ?a (i ?b ?x)) (i (* (d ?x ?a) (i ?b ?x)) ?x))"),
 ]}
 

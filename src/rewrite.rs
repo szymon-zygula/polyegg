@@ -651,6 +651,17 @@ where
     }
 }
 
+impl<L, F, N> Condition<L, N> for F
+where
+    L: Language,
+    N: Analysis<L>,
+    F: Fn(&mut EGraph<L, N>, Id, &Subst) -> bool,
+{
+    fn check(&self, egraph: &mut EGraph<L, N>, eclass: Id, subst: &Subst) -> bool {
+        self(egraph, eclass, subst)
+    }
+}
+
 /// A condition to check in a [`ConditionalApplier`] without modyfing the egraph.
 ///
 /// See the [`ConditionalApplier`] docs.
@@ -673,13 +684,13 @@ where
     fn check_const(&self, egraph: &EGraph<L, N>, eclass: Id, subst: &Subst) -> bool;
 }
 
-impl<L, F, N> Condition<L, N> for F
+impl<L, F, N> ConstCondition<L, N> for F
 where
     L: Language,
     N: Analysis<L>,
-    F: Fn(&mut EGraph<L, N>, Id, &Subst) -> bool,
+    F: Fn(&EGraph<L, N>, Id, &Subst) -> bool + Condition<L, N>,
 {
-    fn check(&self, egraph: &mut EGraph<L, N>, eclass: Id, subst: &Subst) -> bool {
+    fn check_const(&self, egraph: &EGraph<L, N>, eclass: Id, subst: &Subst) -> bool {
         self(egraph, eclass, subst)
     }
 }

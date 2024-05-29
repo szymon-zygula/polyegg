@@ -151,8 +151,8 @@ pub use {
     multipattern::*,
     pattern::{ENodeOrVar, Pattern, PatternAst, SearchMatches},
     rewrite::{
-        Applier, Condition, ConditionEqual, ConditionalApplier, ParallelApplier, ParallelRewrite,
-        Rewrite, Searcher,
+        Applier, Condition, ConditionEqual, ConditionalApplier, ConstCondition, ParallelApplier,
+        ParallelRewrite, Rewrite, Searcher,
     },
     run::*,
     subst::{Subst, Var},
