@@ -1297,6 +1297,19 @@ where
     pub egraph: &'g EGraph<L, N>,
 }
 
+impl<'g, L, N> Clone for EGraphChannel<'g, L, N>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            channel: self.channel.clone(),
+            egraph: self.egraph,
+        }
+    }
+}
+
 impl<'g, L, N> EGraphChannel<'g, L, N>
 where
     L: Language,
