@@ -408,6 +408,26 @@ impl<L> From<Vec<L>> for RecExpr<L> {
 }
 
 impl<L: Language> RecExpr<L> {
+    /// Returns the number of nodes in this expression
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Combines two [`RecExpr`]s into a single one
+    pub fn concat(&self, other: &Self) -> Self {
+        let offset = self.len() as u32;
+
+        let mut other_nodes = other.nodes.clone();
+
+        for node in &mut other_nodes {
+            node.update_children(|child| Id(child.0 + offset));
+        }
+
+        Self {
+            nodes: [self.nodes.clone(), other_nodes].concat(),
+        }
+    }
+
     /// Adds a given enode to this `RecExpr`.
     /// The enode's children `Id`s must refer to elements already in this list.
     pub fn add(&mut self, node: L) -> Id {
