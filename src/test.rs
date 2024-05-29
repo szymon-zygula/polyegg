@@ -120,6 +120,79 @@ pub fn test_runner<L, A>(
     }
 }
 
+#[allow(clippy::type_complexity)]
+pub fn test_runner_par<L, A>(
+    name: &str,
+    runner: Option<ParallelRunner<L, A, ()>>,
+    rules: &[ParallelRewrite<L, A>],
+    start: RecExpr<L>,
+    goals: &[Pattern<L>],
+    check_fn: Option<fn(ParallelRunner<L, A, ()>)>,
+    should_check: bool,
+) where
+    L: Language + Display + FromOp + 'static,
+    A: Analysis<L> + Default,
+{
+    let _ = env_logger::builder().is_test(true).try_init();
+    let mut runner = runner.unwrap_or(ParallelRunner::default_par());
+
+    if let Some(lim) = env_var("EGG_NODE_LIMIT") {
+        runner = runner.with_node_limit(lim)
+    }
+    if let Some(lim) = env_var("EGG_ITER_LIMIT") {
+        runner = runner.with_iter_limit(lim)
+    }
+    if let Some(lim) = env_var("EGG_TIME_LIMIT") {
+        runner = runner.with_time_limit(std::time::Duration::from_secs(lim))
+    }
+
+    // Force sure explanations on if feature is on
+    if cfg!(feature = "test-explanations") {
+        runner = runner.with_explanations_enabled();
+    }
+
+    runner = runner.with_expr(&start);
+    // NOTE this is a bit of hack, we rely on the fact that the
+    // initial root is the last expr added by the runner. We can't
+    // use egraph.find_expr(start) because it may have been pruned
+    // away
+    let id = runner.egraph.find(*runner.roots.last().unwrap());
+
+    if check_fn.is_none() {
+        let goals = goals.to_vec();
+        runner = runner.with_hook(move |r| {
+            if goals
+                .iter()
+                .all(|g: &Pattern<_>| g.search_eclass(&r.egraph, id).is_some())
+            {
+                Err("Proved all goals".into())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let runner = runner.run_par(rules);
+
+    if should_check {
+        let report = runner.report();
+        println!("{report}");
+        runner.egraph.check_goals(id, goals);
+
+        if let Some(filename) = env_var::<PathBuf>("EGG_BENCH_CSV") {
+            let mut file = File::options()
+                .create(true)
+                .append(true)
+                .open(&filename)
+                .unwrap_or_else(|_| panic!("Couldn't open {:?}", filename));
+            writeln!(file, "{},{}", name, runner.report().total_time).unwrap();
+        }
+
+        if let Some(check_fn) = check_fn {
+            check_fn(runner)
+        }
+    }
+}
+
 fn percentile(k: f64, data: &[u128]) -> u128 {
     // assumes data is sorted
     assert!((0.0..=1.0).contains(&k));
@@ -293,6 +366,60 @@ macro_rules! test_fn {
         // NOTE this is no longer needed, we always check
         let check = true;
         $crate::test::test_runner(
+            stringify!($name),
+            None $(.or(Some($runner)))?,
+            &$rules,
+            $start.parse().unwrap(),
+            &[$( $goal.parse().unwrap() ),+],
+            None $(.or(Some($check_fn)))?,
+            check,
+        )
+    }};
+}
+
+/// Utility to make a test proving expressions equivalent using a parallel runner
+///
+/// # Example
+///
+/// ```
+/// # use egg::*;
+/// egg::test_fn! {
+///     // name of the generated test function
+///     my_test_name,
+///     // the rules to use
+///     [
+///         rewrite!("my_silly_rewrite"; "(foo ?a)" => "(bar ?a)"),
+///         rewrite!("my_other_rewrite"; "(bar ?a)" => "(baz ?a)"),
+///     ],
+///     // the `runner = ...` is optional
+///     // if included, this must come right after the rules
+///     runner = Runner::<SymbolLang, (), _>::default(),
+///     // the initial expression
+///     "(foo 1)" =>
+///     // 1 or more goal expressions, all of which will be check to be
+///     // equivalent to the initial one
+///     "(bar 1)",
+///     "(baz 1)",
+/// }
+/// ```
+#[macro_export]
+macro_rules! test_fn_par {
+    (
+        $(#[$meta:meta])*
+        $name:ident, $rules:expr,
+        $(runner = $runner:expr,)?
+        $start:literal
+        =>
+        $($goal:literal),+ $(,)?
+        $(@check $check_fn:expr)?
+    ) => {
+
+    $(#[$meta])*
+    #[test]
+    pub fn $name() {
+        // NOTE this is no longer needed, we always check
+        let check = true;
+        $crate::test::test_runner_par(
             stringify!($name),
             None $(.or(Some($runner)))?,
             &$rules,
