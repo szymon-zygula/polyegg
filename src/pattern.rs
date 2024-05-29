@@ -450,7 +450,9 @@ where
         _rule_name: Symbol,
     ) {
         // Id of the class containing the new node
-        let id = apply_pat_par_safe::<L, N>(&self.ast.as_ref(), &mut egraph_channel.clone(), subst);
+        let mut egraph_channel = egraph_channel.clone();
+        let id = apply_pat_par_safe::<L, N>(&self.ast.as_ref(), &mut egraph_channel, subst);
+        egraph_channel.flush_additions();
         egraph_channel.union(eclass, id);
     }
 }
