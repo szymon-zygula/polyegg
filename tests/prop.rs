@@ -1,3 +1,6 @@
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
+
 use egg::*;
 
 define_language! {
@@ -11,8 +14,61 @@ define_language! {
     }
 }
 
+fn random_symbol(rng: &mut impl Rng) -> Symbol {
+    let symbol = match rng.gen_range(0..3) {
+        0 => "p",
+        1 => "q",
+        2 => "r",
+        _ => "s",
+    };
+
+    symbol.parse().unwrap()
+}
+
+fn random_expr(size: usize, rng: &mut impl Rng) -> RecExpr<Prop> {
+    // Symbol or constant
+    if size == 1 {
+        let mut expr = RecExpr::default();
+        if rng.gen_bool(0.5) {
+            expr.add(Prop::Symbol(random_symbol(rng)));
+        } else {
+            expr.add(Prop::Bool(rng.gen_bool(0.5)));
+        };
+
+        return expr;
+    }
+
+    // Negation
+    if size == 2 || rng.gen_bool(0.2) {
+        let mut expr = random_expr(size - 1, rng);
+        expr.add(Prop::Not((expr.len() - 1).into()));
+        return expr;
+    }
+
+    // Split the tree
+    let left_size = (size - 1) / 2;
+    let right_size = size - 1 - left_size;
+
+    let left = random_expr(left_size, rng);
+    let right = random_expr(right_size, rng);
+    let mut unified = left.concat(&right);
+
+    let left_id = Id::from(left_size - 1);
+    let right_id = Id::from(unified.len() - 1);
+
+    let to_add = match rng.gen_range(0..3) {
+        0 => Prop::And([left_id, right_id]),
+        1 => Prop::Or([left_id, right_id]),
+        _ => Prop::Implies([left_id, right_id]),
+    };
+
+    unified.add(to_add);
+
+    unified
+}
+
 type EGraph = egg::EGraph<Prop, ConstantFold>;
-type Rewrite = egg::Rewrite<Prop, ConstantFold>;
+type Rewrite = egg::ParallelRewrite<Prop, ConstantFold>;
 
 #[derive(Default)]
 struct ConstantFold;
@@ -44,7 +100,7 @@ impl Analysis<Prop> for ConstantFold {
                 format!("(-> {} {})", x(a)?, x(b)?).parse().unwrap(),
             )),
         };
-        println!("Make: {:?} -> {:?}", enode, result);
+        // println!("Make: {:?} -> {:?}", enode, result);
         result
     }
 
@@ -64,7 +120,7 @@ macro_rules! rule {
     ($name:ident, $left:literal, $right:literal) => {
         #[allow(dead_code)]
         fn $name() -> Rewrite {
-            rewrite!(stringify!($name); $left => $right)
+            rewrite_par!(stringify!($name); $left => $right)
         }
     };
     ($name:ident, $name2:ident, $left:literal, $right:literal) => {
@@ -88,7 +144,7 @@ rule! {contrapositive, "(-> ?a ?b)",    "(-> (~ ?b) (~ ?a))"     }
 // this has to be a multipattern since (& (-> ?a ?b) (-> (~ ?a) ?c))  !=  (| ?b ?c)
 // see https://github.com/egraphs-good/egg/issues/185
 fn lem_imply() -> Rewrite {
-    multi_rewrite!(
+    multi_rewrite_par!(
         "lem_imply";
         "?value = true = (& (-> ?a ?b) (-> (~ ?a) ?c))"
         =>
@@ -103,7 +159,7 @@ fn prove_something(name: &str, start: &str, rewrites: &[Rewrite], goals: &[&str]
     let start_expr: RecExpr<_> = start.parse().unwrap();
     let goal_exprs: Vec<RecExpr<_>> = goals.iter().map(|g| g.parse().unwrap()).collect();
 
-    let mut runner = Runner::default()
+    let mut runner = ParallelRunner::default_par()
         .with_iter_limit(20)
         .with_node_limit(5_000)
         .with_expr(&start_expr);
@@ -115,7 +171,7 @@ fn prove_something(name: &str, start: &str, rewrites: &[Rewrite], goals: &[&str]
     runner.egraph.union(root, true_id);
     runner.egraph.rebuild();
 
-    let egraph = runner.run(rewrites).egraph;
+    let egraph = runner.run_par(rewrites).egraph;
 
     for (i, (goal_expr, goal_str)) in goal_exprs.iter().zip(goals).enumerate() {
         println!("Trying to prove goal {}: {}", i, goal_str);
@@ -173,13 +229,36 @@ fn prove_chain() {
 }
 
 #[test]
-fn const_fold() {
-    let start = "(| (& false true) (& true false))";
-    let start_expr = start.parse().unwrap();
-    let end = "false";
-    let end_expr = end.parse().unwrap();
-    let mut eg = EGraph::default();
-    eg.add_expr(&start_expr);
-    eg.rebuild();
-    assert!(!eg.equivs(&start_expr, &end_expr).is_empty());
+fn random_exprs() {
+    let mut rng = ChaCha8Rng::seed_from_u64(1);
+    let expr = random_expr(100, &mut rng);
+    println!("{}", expr.len());
+    println!("{}", expr.pretty(100));
+}
+
+#[test]
+fn parallel_bench() {
+    let mut rng = ChaCha8Rng::seed_from_u64(3);
+    let expr = random_expr(22, &mut rng);
+    println!("{}", expr.len());
+    println!("{}", expr.pretty(120));
+
+    let rules = [
+        lem_imply(),
+        def_imply(),
+        def_imply_flip(),
+        double_neg(),
+        // double_neg_flip(),
+        // assoc_or(),
+        dist_and_or(),
+        dist_or_and(),
+        comm_or(),
+        comm_and(),
+        lem(),
+        or_true(),
+        and_true(),
+        contrapositive(),
+    ];
+
+    crate::test::parallel_bench(&rules, &expr, &[1, 16, 12, 10, 8, 6, 4, 2, 1]);
 }
