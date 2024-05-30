@@ -305,8 +305,6 @@ macro_rules! rewrite {
 }
 
 /** A variant of [`rewrite`] which creates paralle rewrites
-
-[macro]: https://doc.rust-lang.org/stable/reference/macros-by-example.html#metavariables
 **/
 #[macro_export]
 macro_rules! rewrite_par {
@@ -334,7 +332,6 @@ macro_rules! rewrite_par {
     }};
 }
 
-
 /** A macro to easily make [`Rewrite`]s using [`MultiPattern`]s.
 
 Similar to the [`rewrite!`] macro,
@@ -352,6 +349,21 @@ macro_rules! multi_rewrite {
         let searcher = $crate::__rewrite!(@parse MultiPattern $lhs);
         let applier = $crate::__rewrite!(@parse MultiPattern $rhs);
         $crate::Rewrite::new($name.to_string(), searcher, applier).unwrap()
+    }};
+}
+
+/** A variant of [`multi_rewrite`] for creating parallel rewrite rules.
+**/
+#[macro_export]
+macro_rules! multi_rewrite_par {
+    // limited multipattern support
+    (
+        $name:expr;
+        $lhs:tt => $rhs:tt
+    )  => {{
+        let searcher = $crate::__rewrite!(@parse MultiPattern $lhs);
+        let applier = $crate::__rewrite!(@parse MultiPattern $rhs);
+        $crate::ParallelRewrite::new_par($name.to_string(), searcher, applier).unwrap()
     }};
 }
 

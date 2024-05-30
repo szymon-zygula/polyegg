@@ -1,7 +1,8 @@
+use rayon::prelude::*;
 use std::str::FromStr;
 use thiserror::Error;
 
-use crate::*;
+use crate::{egraph::EGraphChannel, *};
 
 /// A set of open expressions bound to variables.
 ///
@@ -192,6 +193,42 @@ impl<L: Language, A: Analysis<L>> Applier<L, A> for MultiPattern<L> {
         vars.sort();
         vars.dedup();
         vars
+    }
+}
+
+impl<L: Language, N: Analysis<L>> ParallelApplier<L, N> for MultiPattern<L> {
+    fn apply_matches_par(
+        &self,
+        egraph_channel: &EGraphChannel<L, N>,
+        matches: &[SearchMatches<L>],
+        _rule_name: Symbol,
+    ) {
+        matches.par_iter().for_each(|mat| {
+            mat.substs.par_iter().for_each(|subst| {
+                let mut egraph_channel = egraph_channel.clone();
+                let mut subst = subst.clone();
+                for (v, p) in self.asts.iter() {
+                    let id1 =
+                        crate::pattern::apply_pat_par_safe(p.as_ref(), &mut egraph_channel, &subst);
+
+                    if let Some(id2) = subst.insert(*v, id1) {
+                        egraph_channel.union(id1, id2);
+                    }
+                }
+
+                egraph_channel.flush_additions();
+            })
+        })
+    }
+
+    fn apply_one_par(
+        &self,
+        _egraph_channel: &EGraphChannel<L, N>,
+        _eclass: Id,
+        _subst: &Subst,
+        _rule_name: Symbol,
+    ) {
+        panic!("Multipatterns do not support apply_one_par")
     }
 }
 

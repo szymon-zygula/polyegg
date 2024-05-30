@@ -1252,6 +1252,12 @@ where
         egraph.clean = false;
         egraph.unionfind.create_promised_sets();
 
+        let deferred_count = self.deferred_nodes.len();
+
+        egraph.pending.reserve(deferred_count);
+        egraph.classes.reserve(deferred_count);
+        egraph.memo.reserve(deferred_count);
+
         for (id, enode) in self.deferred_nodes {
             egraph.pending.push((enode.clone(), id));
 
