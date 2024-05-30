@@ -1295,6 +1295,7 @@ where
     UnionClasses(Id, Id),
 }
 
+/// A structure buffering [`EGraph`] operations when it is used by many threads in parallel.
 pub struct EGraphChannel<'g, L, N>
 where
     L: Language,
@@ -1302,6 +1303,7 @@ where
 {
     channel: mpsc::Sender<EGraphManagerRequest<L>>,
     buffered_nodes: Vec<(Id, L)>,
+    /// EGraph this [`EGraphChannel`] acts for.
     pub egraph: &'g EGraph<L, N>,
 }
 
@@ -1325,17 +1327,8 @@ where
     N: Analysis<L>,
 {
     /// Queues an addition of an enode to the [`EGraph`].
-    ///
-    /// When adding an enode, to the egraph, [`add`] it performs
-    /// _hashconsing_ (sometimes called interning in other contexts).
-    ///
-    /// Hashconsing ensures that only one copy of that enode is in the egraph.
-    /// If a copy is in the egraph, then [`add`] simply returns the id of the
-    /// eclass in which the enode was found. However, if multiple threads try to add an identical
-    /// enode to the [`EGraph`], it might be added twice and deduplication will occur on the next
-    /// call to [`rebuild`](EGraph::rebuild).
-    ///
-    /// [`add`]: EGraphChannel::add()
+    /// The additions are not send to the managing structure until [`Self::flush_additions`] is
+    /// called
     pub fn add(&mut self, mut enode: L) -> Id {
         // Cannot use `find`, because children may refer to classes which don't exist yet.
         enode.try_update_children(|id| self.egraph.unionfind.try_find(id));
@@ -1354,16 +1347,19 @@ where
         id
     }
 
+    /// Creates a request for a union of eclasses with ids `id1` `id2`
     pub fn union(&self, id1: Id, id2: Id) {
         self.channel
             .send(EGraphManagerRequest::UnionClasses(id1, id2))
             .unwrap();
     }
 
+    /// Reserves memory for additional call of [`Self::add`]
     pub fn reserve_additions_buffer(&mut self, capacity: usize) {
         self.buffered_nodes.reserve(capacity);
     }
 
+    /// Sends a request for all buffered additions.
     pub fn flush_additions(&mut self) {
         let old_buffer = std::mem::replace(&mut self.buffered_nodes, Default::default());
         self.channel
