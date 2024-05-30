@@ -141,7 +141,7 @@ pub(crate) use {explain::Explain, unionfind::UnionFind};
 pub use {
     dot::Dot,
     eclass::EClass,
-    egraph::EGraph,
+    egraph::{EGraph, EGraphChannel},
     explain::{
         Explanation, FlatExplanation, FlatTerm, Justification, TreeExplanation, TreeTerm,
         UnionEqualities,

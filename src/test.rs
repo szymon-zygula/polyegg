@@ -292,11 +292,11 @@ where
 }
 
 pub fn parallel_bench<L, N>(
-    rules: Vec<ParallelRewrite<L, N>>,
+    rules: &[ParallelRewrite<L, N>],
     init_expr: &RecExpr<L>,
     threads: &[usize],
 ) where
-    L: Language,
+    L: Language + Display,
     N: Analysis<L> + Default,
 {
     for &threads in threads {
@@ -311,13 +311,14 @@ pub fn parallel_bench<L, N>(
             std::io::stdout().flush().unwrap();
 
             let runner = ParallelRunner::default_par()
-                .with_node_limit(100_000_000)
+                .with_node_limit(10_000_000)
                 .with_time_limit(std::time::Duration::from_secs_f64(150.0))
                 .with_expr(&init_expr)
-                .run_par(&rules);
+                .run_par(rules);
 
             println!("Done");
             runner.print_report();
+            // runner.egraph.dot().to_svg("a").unwrap();
             println!();
         });
     }
