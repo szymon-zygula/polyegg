@@ -635,7 +635,7 @@ where
 {
     /// Check a condition.
     ///
-    /// `eclass` is the eclass [`Id`] where the match (`subst`) occured.
+    /// `eclass` is the eclass [`Id`] where the match (`subst`) occurred.
     /// If this is true, then the [`ConditionalApplier`] will fire.
     ///
     fn check(&self, egraph: &mut EGraph<L, N>, eclass: Id, subst: &Subst) -> bool;
@@ -678,7 +678,7 @@ where
 {
     /// Check a condition.
     ///
-    /// `eclass` is the eclass [`Id`] where the match (`subst`) occured.
+    /// `eclass` is the eclass [`Id`] where the match (`subst`) occurred.
     /// If this is true, then the [`ConditionalApplier`] will fire.
     ///
     fn check_const(&self, egraph: &EGraph<L, N>, eclass: Id, subst: &Subst) -> bool;
