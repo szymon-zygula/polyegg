@@ -761,6 +761,6 @@ mod tests {
             rewrite_par!("9+9"; "(+ 9 9)" => "18"),
         ];
 
-        crate::test::parallel_bench(&rules, &init_expr, &[1, 1, 2, 4, 6, 8, 12, 16]);
+        crate::test::parallel_bench(&rules, &init_expr, &[1, 1, 2, 4, 6, 8, 12, 16], "rules_bench");
     }
 }

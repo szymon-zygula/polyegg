@@ -260,5 +260,5 @@ fn parallel_bench() {
         contrapositive(),
     ];
 
-    crate::test::parallel_bench(&rules, &expr, &[1, 16, 12, 10, 8, 6, 4, 2, 1]);
+    crate::test::parallel_bench(&rules, &expr, &[1, 16, 12, 10, 8, 6, 4, 2, 1], "logic");
 }

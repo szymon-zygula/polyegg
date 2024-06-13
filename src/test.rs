@@ -291,14 +291,37 @@ where
     egraph
 }
 
+fn csv_header() -> &'static str {
+    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds\n"
+}
+
+fn csv_line(report: &Report, threads: usize) -> String {
+    format!(
+        "{threads};{};{};{};{};{:?};{};{};{};{};{}\n",
+        report.total_time,
+        report.search_time,
+        report.apply_time,
+        report.rebuild_time,
+        report.stop_reason,
+        report.iterations,
+        report.egraph_nodes,
+        report.egraph_classes,
+        report.memo_size,
+        report.rebuilds
+    )
+}
+
 pub fn parallel_bench<L, N>(
     rules: &[ParallelRewrite<L, N>],
     init_expr: &RecExpr<L>,
     threads: &[usize],
+    name: &str,
 ) where
     L: Language + Display,
     N: Analysis<L> + Default,
 {
+    let mut log = String::from(csv_header());
+
     for &threads in threads {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -317,11 +340,16 @@ pub fn parallel_bench<L, N>(
                 .run_par(rules);
 
             println!("Done");
-            runner.print_report();
+            // runner.print_report();
+            let report = runner.report();
+            log += &csv_line(&report, threads);
+            // runner.print_report();
             // runner.egraph.dot().to_svg("a").unwrap();
             println!();
         });
     }
+
+    std::fs::write(format!("{name}.csv"), log).unwrap();
 }
 
 /// Utility to make a test proving expressions equivalent

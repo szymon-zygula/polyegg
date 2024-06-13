@@ -8,7 +8,7 @@ use crate::{egraph::EGraphManager, *};
 
 use self::{egraph::EGraphChannel, rewrite::ParallelRewrite};
 
-/** Faciliates running rewrites over an [`EGraph`].
+/** Facilitates running rewrites over an [`EGraph`].
 
 One use for [`EGraph`]s is as the basis of a rewriting system.
 Since an egraph never "forgets" state when applying a [`Rewrite`], you
