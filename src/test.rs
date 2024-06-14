@@ -322,19 +322,19 @@ pub fn parallel_bench<L, N>(
 {
     let mut log = String::from(csv_header());
 
-    for &threads in threads {
+    for (i, &th) in threads.iter().enumerate() {
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
+            .num_threads(th)
             .build()
             .unwrap();
 
         pool.install(|| {
-            println!("Testing {threads} threads.");
+            println!("Testing {th} threads ({i}/{}).", threads.len());
             print!("Saturating... ");
             std::io::stdout().flush().unwrap();
 
             let runner = ParallelRunner::default_par()
-                .with_node_limit(10_000_000)
+                .with_node_limit(1_000_000)
                 .with_time_limit(std::time::Duration::from_secs_f64(150.0))
                 .with_expr(&init_expr)
                 .run_par(rules);
@@ -342,7 +342,7 @@ pub fn parallel_bench<L, N>(
             println!("Done");
             // runner.print_report();
             let report = runner.report();
-            log += &csv_line(&report, threads);
+            log += &csv_line(&report, th);
             // runner.print_report();
             // runner.egraph.dot().to_svg("a").unwrap();
             println!();
