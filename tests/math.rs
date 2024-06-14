@@ -516,10 +516,19 @@ fn random_exprs() {
 
 #[test]
 fn parallel_bench() {
-    let mut rng = ChaCha8Rng::seed_from_u64(1);
-    let expr = random_expr(6, &mut rng);
-    println!("{}", expr.len());
-    println!("{}", expr.pretty(120));
+    for length in [10] {
+        for seed in 1..2 {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let expr = random_expr(length, &mut rng);
+            println!("{}", expr.len());
+            println!("{}", expr.pretty(120));
 
-    crate::test::parallel_bench(&rules_par(), &expr, &[1, 1, 2, 4, 6, 8, 10, 12], "math");
+            crate::test::parallel_bench(
+                &rules_par(),
+                &[expr],
+                &[1, 1, 2, 4, 6, 8, 10, 12],
+                &format!("math_l{length}_s{seed}"),
+            );
+        }
+    }
 }

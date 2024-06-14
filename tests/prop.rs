@@ -240,8 +240,6 @@ fn random_exprs() {
 fn parallel_bench() {
     let mut rng = ChaCha8Rng::seed_from_u64(3);
     let expr = random_expr(22, &mut rng);
-    println!("{}", expr.len());
-    println!("{}", expr.pretty(120));
 
     let rules = [
         lem_imply(),
@@ -260,5 +258,5 @@ fn parallel_bench() {
         contrapositive(),
     ];
 
-    crate::test::parallel_bench(&rules, &expr, &[1, 16, 12, 10, 8, 6, 4, 2, 1], "logic");
+    crate::test::parallel_bench(&rules, &[expr], &[1, 16, 12, 10, 8, 6, 4, 2, 1], "logic");
 }
