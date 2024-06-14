@@ -291,13 +291,19 @@ where
     egraph
 }
 
-fn csv_header() -> &'static str {
-    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size\n"
+pub fn csv_header() -> &'static str {
+    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size;iter\n"
 }
 
-fn csv_line<L: Language + Display>(report: &Report, threads: usize, expr: &RecExpr<L>) -> String {
+fn csv_line<L: Language + Display>(
+    report: &Report,
+    threads: usize,
+    expr: &RecExpr<L>,
+    iter: usize,
+) -> String {
+    // 0 threads == single threaded algorithm with no changes
     format!(
-        "{threads};{};{};{};{};{:?};{};{};{};{};{};{};{}\n",
+        "{threads};{};{};{};{};{:?};{};{};{};{};{};{};{};{}\n",
         report.total_time,
         report.search_time,
         report.apply_time,
@@ -309,28 +315,59 @@ fn csv_line<L: Language + Display>(report: &Report, threads: usize, expr: &RecEx
         report.memo_size,
         report.rebuilds,
         expr,
-        expr.len()
+        expr.len(),
+        iter
     )
 }
 
-const PAR_BENCH_NODES: usize = 1_000_000;
-const PAR_BENCH_AVG_TRIES: usize = 15;
+const PAR_BENCH_NODES: usize = 100_000;
+const PAR_BENCH_ITERS: usize = 50;
+const PAR_BENCH_AVG_TRIES: usize = 11;
 
 pub fn parallel_bench<L, N>(
     rules: &[ParallelRewrite<L, N>],
+    rules_seq: &[Rewrite<L, N>],
     exprs: &[RecExpr<L>],
     threads: &[usize],
-    name: &str,
-) where
+) -> String
+where
     L: Language + Display,
     N: Analysis<L> + Default,
 {
-    let mut log = String::from(csv_header());
+    let mut log = String::new();
 
-    for expr in exprs {
+    for (ex_i, expr) in exprs.iter().enumerate() {
         println!("Testing {}", expr.pretty(120));
+        println!("Expression {}/{}", ex_i + 1, exprs.len());
+        println!("Singlethreaded");
         for avg_try in 1..=PAR_BENCH_AVG_TRIES {
-            for (i, &th) in threads.iter().enumerate() {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                print!(
+                    "\rTry {avg_try}/{PAR_BENCH_AVG_TRIES}, ({:.2}%)...\t\t\t",
+                    (100.0 * avg_try as f32 / PAR_BENCH_AVG_TRIES as f32)
+                );
+                std::io::stdout().flush().unwrap();
+
+                let runner = Runner::default()
+                    .with_iter_limit(PAR_BENCH_ITERS)
+                    .with_node_limit(PAR_BENCH_NODES)
+                    .with_time_limit(std::time::Duration::from_secs_f64(150.0))
+                    .with_expr(&expr)
+                    .run(rules_seq);
+
+                let report = runner.report();
+                log += &csv_line(&report, 0, expr, avg_try);
+            });
+        }
+        println!();
+
+        println!("Multithreaded");
+        for (i, &th) in threads.iter().enumerate() {
+            for avg_try in 1..=PAR_BENCH_AVG_TRIES {
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(th)
                     .build()
@@ -338,25 +375,23 @@ pub fn parallel_bench<L, N>(
 
                 pool.install(|| {
                     print!(
-                        "\rTry {avg_try}/{PAR_BENCH_AVG_TRIES}, {th} threads ({}/{}) ({:.2}%)...",
+                        "\rTry {avg_try}/{PAR_BENCH_AVG_TRIES}, {th} threads ({}/{}) ({:.2}%)...\t\t\t",
                         i + 1,
                         threads.len(),
-                        (100.0 * ((avg_try - 1) * threads.len() + i + 1) as f32
+                        (100.0 * (th * PAR_BENCH_AVG_TRIES + avg_try) as f32
                             / (PAR_BENCH_AVG_TRIES * threads.len()) as f32)
                     );
                     std::io::stdout().flush().unwrap();
 
                     let runner = ParallelRunner::default_par()
+                        .with_iter_limit(PAR_BENCH_ITERS)
                         .with_node_limit(PAR_BENCH_NODES)
                         .with_time_limit(std::time::Duration::from_secs_f64(150.0))
                         .with_expr(&expr)
                         .run_par(rules);
 
-                    // runner.print_report();
                     let report = runner.report();
-                    log += &csv_line(&report, th, expr);
-                    // runner.print_report();
-                    // runner.egraph.dot().to_svg("a").unwrap();
+                    log += &csv_line(&report, th, expr, avg_try);
                 });
             }
         }
@@ -364,7 +399,7 @@ pub fn parallel_bench<L, N>(
         println!();
     }
 
-    std::fs::write(format!("{name}.csv"), log).unwrap();
+    log
 }
 
 /// Utility to make a test proving expressions equivalent

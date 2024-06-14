@@ -116,11 +116,36 @@ impl Analysis<Prop> for ConstantFold {
     }
 }
 
-macro_rules! rule {
+macro_rules! rule_par {
     ($name:ident, $left:literal, $right:literal) => {
         #[allow(dead_code)]
         fn $name() -> Rewrite {
             rewrite_par!(stringify!($name); $left => $right)
+        }
+    };
+    ($name:ident, $name2:ident, $left:literal, $right:literal) => {
+        rule_par!($name, $left, $right);
+        rule_par!($name2, $right, $left);
+    };
+}
+
+rule_par! {def_imply_par, def_imply_flip_par,   "(-> ?a ?b)",       "(| (~ ?a) ?b)"          }
+rule_par! {double_neg_par, double_neg_flip_par,  "(~ (~ ?a))",       "?a"                     }
+rule_par! {assoc_or_par,    "(| ?a (| ?b ?c))", "(| (| ?a ?b) ?c)"       }
+rule_par! {dist_and_or_par, "(& ?a (| ?b ?c))", "(| (& ?a ?b) (& ?a ?c))"}
+rule_par! {dist_or_and_par, "(| ?a (& ?b ?c))", "(& (| ?a ?b) (| ?a ?c))"}
+rule_par! {comm_or_par,     "(| ?a ?b)",        "(| ?b ?a)"              }
+rule_par! {comm_and_par,    "(& ?a ?b)",        "(& ?b ?a)"              }
+rule_par! {lem_par,         "(| ?a (~ ?a))",    "true"                      }
+rule_par! {or_true_par,     "(| ?a true)",         "true"                      }
+rule_par! {and_true_par,    "(& ?a true)",         "?a"                     }
+rule_par! {contrapositive_par, "(-> ?a ?b)",    "(-> (~ ?b) (~ ?a))"     }
+
+macro_rules! rule {
+    ($name:ident, $left:literal, $right:literal) => {
+        #[allow(dead_code)]
+        fn $name() -> egg::Rewrite<Prop, ConstantFold> {
+            rewrite!(stringify!($name); $left => $right)
         }
     };
     ($name:ident, $name2:ident, $left:literal, $right:literal) => {
@@ -143,8 +168,17 @@ rule! {contrapositive, "(-> ?a ?b)",    "(-> (~ ?b) (~ ?a))"     }
 
 // this has to be a multipattern since (& (-> ?a ?b) (-> (~ ?a) ?c))  !=  (| ?b ?c)
 // see https://github.com/egraphs-good/egg/issues/185
-fn lem_imply() -> Rewrite {
+fn lem_imply_par() -> Rewrite {
     multi_rewrite_par!(
+        "lem_imply";
+        "?value = true = (& (-> ?a ?b) (-> (~ ?a) ?c))"
+        =>
+        "?value = (| ?b ?c)"
+    )
+}
+
+fn lem_imply() -> egg::Rewrite<Prop, ConstantFold> {
+    multi_rewrite!(
         "lem_imply";
         "?value = true = (& (-> ?a ?b) (-> (~ ?a) ?c))"
         =>
@@ -185,7 +219,12 @@ fn prove_something(name: &str, start: &str, rewrites: &[Rewrite], goals: &[&str]
 #[test]
 fn prove_contrapositive() {
     let _ = env_logger::builder().is_test(true).try_init();
-    let rules = &[def_imply(), def_imply_flip(), double_neg_flip(), comm_or()];
+    let rules = &[
+        def_imply_par(),
+        def_imply_flip_par(),
+        double_neg_flip_par(),
+        comm_or_par(),
+    ];
     prove_something(
         "contrapositive",
         "(-> x y)",
@@ -205,13 +244,13 @@ fn prove_chain() {
     let _ = env_logger::builder().is_test(true).try_init();
     let rules = &[
         // rules needed for contrapositive
-        def_imply(),
-        def_imply_flip(),
-        double_neg_flip(),
-        comm_or(),
+        def_imply_par(),
+        def_imply_flip_par(),
+        double_neg_flip_par(),
+        comm_or_par(),
         // and some others
-        comm_and(),
-        lem_imply(),
+        comm_and_par(),
+        lem_imply_par(),
     ];
     prove_something(
         "chain",
@@ -241,7 +280,7 @@ fn parallel_bench() {
     let mut rng = ChaCha8Rng::seed_from_u64(3);
     let expr = random_expr(22, &mut rng);
 
-    let rules = [
+    let rules_seq = [
         lem_imply(),
         def_imply(),
         def_imply_flip(),
@@ -258,5 +297,22 @@ fn parallel_bench() {
         contrapositive(),
     ];
 
-    crate::test::parallel_bench(&rules, &[expr], &[1, 16, 12, 10, 8, 6, 4, 2, 1], "logic");
+    let rules = [
+        lem_imply_par(),
+        def_imply_par(),
+        def_imply_flip_par(),
+        double_neg_par(),
+        // double_neg_flip_par(),
+        // assoc_or_par(),
+        dist_and_or_par(),
+        dist_or_and_par(),
+        comm_or_par(),
+        comm_and_par(),
+        lem_par(),
+        or_true_par(),
+        and_true_par(),
+        contrapositive_par(),
+    ];
+
+    crate::test::parallel_bench(&rules, &rules_seq, &[expr], &[1, 16, 12, 10, 8, 6, 4, 2, 1]);
 }

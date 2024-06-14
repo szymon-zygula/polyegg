@@ -304,7 +304,7 @@ macro_rules! rewrite {
     }};
 }
 
-/** A variant of [`rewrite`] which creates paralle rewrites
+/** A variant of [`rewrite`] which creates parallel rewrites
 **/
 #[macro_export]
 macro_rules! rewrite_par {

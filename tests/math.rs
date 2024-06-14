@@ -342,6 +342,74 @@ impl ConstCondition<Math, ConstantFold> for IsNotZero {
         }
     }
 }
+
+#[rustfmt::skip]
+pub fn rules() -> Vec<egg::Rewrite<Math, ConstantFold>> { vec![
+    rw!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
+    rw!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
+    rw!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+    rw!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+
+    rw!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
+    rw!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
+    rw!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
+    rw!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if IsNotZero::new("?b")),
+
+    rw!("zero-add"; "(+ ?a 0)" => "?a"),
+    rw!("zero-mul"; "(* ?a 0)" => "0"),
+    rw!("one-mul";  "(* ?a 1)" => "?a"),
+
+    // rw!("add-zero"; "?a" => "(+ ?a 0)"),
+    // rw!("mul-one";  "?a" => "(* ?a 1)"),
+
+    rw!("cancel-sub"; "(- ?a ?a)" => "0"),
+    rw!("cancel-div"; "(/ ?a ?a)" => "1" if IsNotZero::new("?a")),
+
+    rw!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
+    rw!("factor"    ; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
+
+    rw!("pow-mul"; "(* (pow ?a ?b) (pow ?a ?c))" => "(pow ?a (+ ?b ?c))"),
+    rw!("pow0"; "(pow ?x 0)" => "1"
+       if IsNotZero::new("?x")),
+    rw!("pow1"; "(pow ?x 1)" => "?x"),
+    rw!("pow2"; "(pow ?x 2)" => "(* ?x ?x)"),
+    rw!("pow-recip"; "(pow ?x -1)" => "(/ 1 ?x)"
+       if IsNotZero::new("?x")),
+    rw!("recip-mul-div"; "(* ?x (/ 1 ?x))" => "1" if IsNotZero::new("?x")),
+
+    rw!("d-variable"; "(d ?x ?x)" => "1" if IsSym::new("?x")),
+    rw!("d-constant"; "(d ?x ?c)" => "0" if IsSym::new("?x") if IsConstOrDistinctVar::new("?c", "?x")),
+
+    rw!("d-add"; "(d ?x (+ ?a ?b))" => "(+ (d ?x ?a) (d ?x ?b))"),
+    rw!("d-mul"; "(d ?x (* ?a ?b))" => "(+ (* ?a (d ?x ?b)) (* ?b (d ?x ?a)))"),
+
+    rw!("d-sin"; "(d ?x (sin ?x))" => "(cos ?x)"),
+    rw!("d-cos"; "(d ?x (cos ?x))" => "(* -1 (sin ?x))"),
+
+    rw!("d-ln"; "(d ?x (ln ?x))" => "(/ 1 ?x)" if IsNotZero::new("?x")),
+
+    rw!("d-power";
+       "(d ?x (pow ?f ?g))" =>
+       "(* (pow ?f ?g)
+           (+ (* (d ?x ?f)
+                 (/ ?g ?f))
+              (* (d ?x ?g)
+                 (ln ?f))))"
+       if IsNotZero::new("?f")
+       if IsNotZero::new("?g")
+    ),
+
+    rw!("i-one"; "(i 1 ?x)" => "?x"),
+    rw!("i-power-const"; "(i (pow ?x ?c) ?x)" =>
+       "(/ (pow ?x (+ ?c 1)) (+ ?c 1))" if IsConst::new("?c")),
+    rw!("i-cos"; "(i (cos ?x) ?x)" => "(sin ?x)"),
+    rw!("i-sin"; "(i (sin ?x) ?x)" => "(* -1 (cos ?x))"),
+    rw!("i-sum"; "(i (+ ?f ?g) ?x)" => "(+ (i ?f ?x) (i ?g ?x))"),
+    rw!("i-dif"; "(i (- ?f ?g) ?x)" => "(- (i ?f ?x) (i ?g ?x))"),
+    rw!("i-parts"; "(i (* ?a ?b) ?x)" =>
+        "(- (* ?a (i ?b ?x)) (i (* (d ?x ?a) (i ?b ?x)) ?x))"),
+]}
+
 #[rustfmt::skip]
 pub fn rules_par() -> Vec<ParallelRewrite<Math, ConstantFold>> { vec![
     rwp!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
@@ -351,8 +419,8 @@ pub fn rules_par() -> Vec<ParallelRewrite<Math, ConstantFold>> { vec![
 
     rwp!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
     rwp!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
-    // rwp!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
-    // rwp!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if is_not_zero("?b")),
+    rwp!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
+    rwp!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if IsNotZero::new("?b")),
 
     rwp!("zero-add"; "(+ ?a 0)" => "?a"),
     rwp!("zero-mul"; "(* ?a 0)" => "0"),
@@ -516,19 +584,25 @@ fn random_exprs() {
 
 #[test]
 fn parallel_bench() {
-    for length in [10] {
-        for seed in 1..2 {
+    let mut exprs = Vec::new();
+    for length in [5, 10, 25, 50] {
+        for seed in 0..3 {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let expr = random_expr(length, &mut rng);
-            println!("{}", expr.len());
-            println!("{}", expr.pretty(120));
-
-            crate::test::parallel_bench(
-                &rules_par(),
-                &[expr],
-                &[1, 1, 2, 4, 6, 8, 10, 12],
-                &format!("math_l{length}_s{seed}"),
-            );
+            exprs.push(expr);
         }
     }
+
+    let mut log = String::from(test::csv_header());
+
+    log += &crate::test::parallel_bench(
+        &rules_par(),
+        &rules(),
+        &exprs,
+        &[
+            1, 1, 2, 3, 4, 5, 6, 7, 8, // 10, 12, 14, 16, 20, 20, 24, 28, 32,
+        ],
+    );
+
+    std::fs::write(format!("math.csv"), log).unwrap();
 }
