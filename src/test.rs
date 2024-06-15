@@ -314,15 +314,15 @@ fn csv_line<L: Language + Display>(
         report.egraph_classes,
         report.memo_size,
         report.rebuilds,
-        expr,
+        "skipped",
         expr.len(),
         iter
     )
 }
 
-const PAR_BENCH_NODES: usize = 1_000_000;
-const PAR_BENCH_ITERS: usize = 10;
-const PAR_BENCH_TIME: f32 = 10.0;
+const PAR_BENCH_NODES: usize = 100_000_000;
+const PAR_BENCH_ITERS: usize = 3;
+const PAR_BENCH_TIME: f32 = 20.0;
 const PAR_BENCH_AVG_TRIES: usize = 2;
 
 pub fn parallel_bench<L, N>(
@@ -330,7 +330,7 @@ pub fn parallel_bench<L, N>(
     rules_seq: &[Rewrite<L, N>],
     exprs: &[RecExpr<L>],
     threads: &[usize],
-    name: &str
+    name: &str,
 ) -> String
 where
     L: Language + Display,
@@ -341,7 +341,7 @@ where
     file.write_all(csv_header().as_bytes()).unwrap();
 
     for (ex_i, expr) in exprs.iter().enumerate() {
-        println!("Testing {}", expr.pretty(120));
+        // println!("Testing {}", expr.pretty(120));
         println!("Expression {}/{}", ex_i + 1, exprs.len());
         println!("Singlethreaded");
         for avg_try in 1..=PAR_BENCH_AVG_TRIES {
@@ -357,6 +357,7 @@ where
                 std::io::stdout().flush().unwrap();
 
                 let runner = Runner::default()
+                    .with_scheduler(SimpleScheduler::default())
                     .with_iter_limit(PAR_BENCH_ITERS)
                     .with_node_limit(PAR_BENCH_NODES)
                     .with_time_limit(std::time::Duration::from_secs_f32(PAR_BENCH_TIME))
@@ -369,6 +370,7 @@ where
                 file.write_all(csv.as_bytes()).unwrap();
             });
         }
+
         println!();
 
         println!("Multithreaded");
