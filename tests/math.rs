@@ -606,4 +606,20 @@ fn parallel_bench() {
     );
 
     // std::fs::write(format!("math-big.csv"), log).unwrap();
+#[test]
+fn parallel_mem() {
+    let length: usize = std::env::var("PE_LEN").unwrap().parse().unwrap();
+    let seed: u64 = std::env::var("PE_SEED").unwrap().parse().unwrap();
+    let seq: bool = std::env::var("PE_SEQ").unwrap().parse().unwrap();
+    println!("Memory test");
+    println!("Len: {length}, seed: {seed}, seq: {seq}");
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let expr = random_expr(length, &mut rng);
+
+    if seq {
+        crate::test::parallel_bench_peak_mem(&rules_par(), &expr);
+    } else {
+        crate::test::parallel_bench_peak_mem_sing(&rules(), &expr);
+    }
 }

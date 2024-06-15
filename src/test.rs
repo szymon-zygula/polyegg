@@ -325,6 +325,53 @@ const PAR_BENCH_ITERS: usize = 3;
 const PAR_BENCH_TIME: f32 = 20.0;
 const PAR_BENCH_AVG_TRIES: usize = 2;
 
+pub fn parallel_bench_peak_mem_sing<L, N>(rules: &[Rewrite<L, N>], expr: &RecExpr<L>)
+where
+    L: Language + Display,
+    N: Analysis<L> + Default,
+{
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+
+    pool.install(|| {
+        let runner = Runner::default()
+            .with_scheduler(SimpleScheduler::default())
+            .with_iter_limit(PAR_BENCH_ITERS)
+            .with_node_limit(PAR_BENCH_NODES)
+            .with_time_limit(std::time::Duration::from_secs_f32(PAR_BENCH_TIME))
+            .with_expr(&expr)
+            .run(rules);
+
+        runner.print_report();
+    });
+}
+
+pub fn parallel_bench_peak_mem<L, N>(rules: &[ParallelRewrite<L, N>], expr: &RecExpr<L>)
+where
+    L: Language + Display,
+    N: Analysis<L> + Default,
+{
+    let threads: usize = std::env::var("PE_THREADS").unwrap().parse().unwrap();
+    println!("Threads: {threads}");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
+
+    pool.install(|| {
+        let runner = ParallelRunner::default_par()
+            .with_iter_limit(PAR_BENCH_ITERS)
+            .with_node_limit(PAR_BENCH_NODES)
+            .with_time_limit(std::time::Duration::from_secs_f32(PAR_BENCH_TIME))
+            .with_expr(&expr)
+            .run_par(rules);
+
+        runner.print_report();
+    });
+}
+
 pub fn parallel_bench<L, N>(
     rules: &[ParallelRewrite<L, N>],
     rules_seq: &[Rewrite<L, N>],
