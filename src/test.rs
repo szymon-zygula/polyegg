@@ -320,9 +320,10 @@ fn csv_line<L: Language + Display>(
     )
 }
 
-const PAR_BENCH_NODES: usize = 100_000;
-const PAR_BENCH_ITERS: usize = 50;
-const PAR_BENCH_AVG_TRIES: usize = 11;
+const PAR_BENCH_NODES: usize = 1_000_000;
+const PAR_BENCH_ITERS: usize = 10;
+const PAR_BENCH_TIME: f32 = 10.0;
+const PAR_BENCH_AVG_TRIES: usize = 2;
 
 pub fn parallel_bench<L, N>(
     rules: &[ParallelRewrite<L, N>],
@@ -337,6 +338,7 @@ where
 {
     let mut log = String::new();
     let mut file = std::fs::File::create_new(name).unwrap();
+    file.write_all(csv_header().as_bytes()).unwrap();
 
     for (ex_i, expr) in exprs.iter().enumerate() {
         println!("Testing {}", expr.pretty(120));
@@ -357,7 +359,7 @@ where
                 let runner = Runner::default()
                     .with_iter_limit(PAR_BENCH_ITERS)
                     .with_node_limit(PAR_BENCH_NODES)
-                    .with_time_limit(std::time::Duration::from_secs_f64(150.0))
+                    .with_time_limit(std::time::Duration::from_secs_f32(PAR_BENCH_TIME))
                     .with_expr(&expr)
                     .run(rules_seq);
 
@@ -390,7 +392,7 @@ where
                     let runner = ParallelRunner::default_par()
                         .with_iter_limit(PAR_BENCH_ITERS)
                         .with_node_limit(PAR_BENCH_NODES)
-                        .with_time_limit(std::time::Duration::from_secs_f64(150.0))
+                        .with_time_limit(std::time::Duration::from_secs_f32(PAR_BENCH_TIME))
                         .with_expr(&expr)
                         .run_par(rules);
 

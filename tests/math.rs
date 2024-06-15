@@ -345,13 +345,13 @@ impl ConstCondition<Math, ConstantFold> for IsNotZero {
 
 #[rustfmt::skip]
 pub fn rules() -> Vec<egg::Rewrite<Math, ConstantFold>> { vec![
-    rw!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
-    rw!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
-    rw!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
-    rw!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+    //rw!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
+    //rw!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
+    //rw!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+    //rw!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
 
-    rw!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
-    rw!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
+    //rw!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
+    //rw!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
     rw!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
     rw!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if IsNotZero::new("?b")),
 
@@ -365,7 +365,7 @@ pub fn rules() -> Vec<egg::Rewrite<Math, ConstantFold>> { vec![
     rw!("cancel-sub"; "(- ?a ?a)" => "0"),
     rw!("cancel-div"; "(/ ?a ?a)" => "1" if IsNotZero::new("?a")),
 
-    rw!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
+    // rw!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
     rw!("factor"    ; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
 
     rw!("pow-mul"; "(* (pow ?a ?b) (pow ?a ?c))" => "(pow ?a (+ ?b ?c))"),
@@ -412,13 +412,13 @@ pub fn rules() -> Vec<egg::Rewrite<Math, ConstantFold>> { vec![
 
 #[rustfmt::skip]
 pub fn rules_par() -> Vec<ParallelRewrite<Math, ConstantFold>> { vec![
-    rwp!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
-    rwp!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
-    rwp!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
-    rwp!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+    // rwp!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
+    // rwp!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
+    // rwp!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+    // rwp!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
 
-    rwp!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
-    rwp!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
+    //rwp!("sub-canon"; "(- ?a ?b)" => "(+ ?a (* -1 ?b))"),
+    //rwp!("div-canon"; "(/ ?a ?b)" => "(* ?a (pow ?b -1))" if IsNotZero::new("?b")),
     rwp!("canon-sub"; "(+ ?a (* -1 ?b))"   => "(- ?a ?b)"),
     rwp!("canon-div"; "(* ?a (pow ?b -1))" => "(/ ?a ?b)" if IsNotZero::new("?b")),
 
@@ -432,7 +432,7 @@ pub fn rules_par() -> Vec<ParallelRewrite<Math, ConstantFold>> { vec![
     rwp!("cancel-sub"; "(- ?a ?a)" => "0"),
     rwp!("cancel-div"; "(/ ?a ?a)" => "1" if IsNotZero::new("?a")),
 
-    rwp!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
+    // rwp!("distribute"; "(* ?a (+ ?b ?c))"        => "(+ (* ?a ?b) (* ?a ?c))"),
     rwp!("factor"    ; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
 
     rwp!("pow-mul"; "(* (pow ?a ?b) (pow ?a ?c))" => "(pow ?a (+ ?b ?c))"),
@@ -585,8 +585,8 @@ fn random_exprs() {
 #[test]
 fn parallel_bench() {
     let mut exprs = Vec::new();
-    for length in [5, 10, 25, 50, 100, 250, 500] {
-        for seed in 0..5 {
+    for length in [10, 100, 1000, 10_000, 100_000] {
+        for seed in 0..10 {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let expr = random_expr(length, &mut rng);
             exprs.push(expr);
@@ -602,7 +602,7 @@ fn parallel_bench() {
         &[
             1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32,
         ],
-        "math-big.csv"
+        "math-new-dgx.csv"
     );
 
     // std::fs::write(format!("math-big.csv"), log).unwrap();

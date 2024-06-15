@@ -283,11 +283,11 @@ fn parallel_bench() {
         def_imply_flip(),
         double_neg(),
         // double_neg_flip(),
-        assoc_or(),
-        dist_and_or(),
-        dist_or_and(),
-        comm_or(),
-        comm_and(),
+        //assoc_or(),
+        //dist_and_or(),
+        //dist_or_and(),
+        //comm_or(),
+        //comm_and(),
         lem(),
         or_true(),
         and_true(),
@@ -300,11 +300,11 @@ fn parallel_bench() {
         def_imply_flip_par(),
         double_neg_par(),
         // double_neg_flip_par(),
-        assoc_or_par(),
-        dist_and_or_par(),
-        dist_or_and_par(),
-        comm_or_par(),
-        comm_and_par(),
+        // assoc_or_par(),
+        // dist_and_or_par(),
+        // dist_or_and_par(),
+        //comm_or_par(),
+        //comm_and_par(),
         lem_par(),
         or_true_par(),
         and_true_par(),
@@ -312,8 +312,8 @@ fn parallel_bench() {
     ];
 
     let mut exprs = Vec::new();
-    for length in [5, 10, 25, 50, 100, 250, 500] {
-        for seed in 0..5 {
+    for length in [/*5, 10, 25, 50, 100, 250, 500*/1000, 2500, 5000, 10_000] {
+        for seed in 0..10 {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let expr = random_expr(length, &mut rng);
             exprs.push(expr);
@@ -329,7 +329,7 @@ fn parallel_bench() {
         &[
             1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32,
         ],
-        "prop-big.csv"
+        "prop-simp-big.csv"
     );
 
     // std::fs::write("prop-big.csv", log).unwrap();
