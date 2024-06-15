@@ -585,8 +585,8 @@ fn random_exprs() {
 #[test]
 fn parallel_bench() {
     let mut exprs = Vec::new();
-    for length in [5, 10, 25, 50] {
-        for seed in 0..3 {
+    for length in [5, 10, 25, 50, 100, 250, 500] {
+        for seed in 0..5 {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let expr = random_expr(length, &mut rng);
             exprs.push(expr);
@@ -600,9 +600,10 @@ fn parallel_bench() {
         &rules(),
         &exprs,
         &[
-            1, 1, 2, 3, 4, 5, 6, 7, 8, // 10, 12, 14, 16, 20, 20, 24, 28, 32,
+            1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32,
         ],
+        "math-big.csv"
     );
 
-    std::fs::write(format!("math.csv"), log).unwrap();
+    // std::fs::write(format!("math-big.csv"), log).unwrap();
 }

@@ -329,12 +329,14 @@ pub fn parallel_bench<L, N>(
     rules_seq: &[Rewrite<L, N>],
     exprs: &[RecExpr<L>],
     threads: &[usize],
+    name: &str
 ) -> String
 where
     L: Language + Display,
     N: Analysis<L> + Default,
 {
     let mut log = String::new();
+    let mut file = std::fs::File::create_new(name).unwrap();
 
     for (ex_i, expr) in exprs.iter().enumerate() {
         println!("Testing {}", expr.pretty(120));
@@ -360,7 +362,9 @@ where
                     .run(rules_seq);
 
                 let report = runner.report();
-                log += &csv_line(&report, 0, expr, avg_try);
+                let csv = csv_line(&report, 0, expr, avg_try);
+                log += &csv;
+                file.write_all(csv.as_bytes()).unwrap();
             });
         }
         println!();
@@ -378,7 +382,7 @@ where
                         "\rTry {avg_try}/{PAR_BENCH_AVG_TRIES}, {th} threads ({}/{}) ({:.2}%)...\t\t\t",
                         i + 1,
                         threads.len(),
-                        (100.0 * (th * PAR_BENCH_AVG_TRIES + avg_try) as f32
+                        (100.0 * (i * PAR_BENCH_AVG_TRIES + avg_try) as f32
                             / (PAR_BENCH_AVG_TRIES * threads.len()) as f32)
                     );
                     std::io::stdout().flush().unwrap();
@@ -391,7 +395,9 @@ where
                         .run_par(rules);
 
                     let report = runner.report();
-                    log += &csv_line(&report, th, expr, avg_try);
+                    let csv = csv_line(&report, th, expr, avg_try);
+                    log += &csv;
+                    file.write_all(csv.as_bytes()).unwrap();
                 });
             }
         }
