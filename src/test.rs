@@ -292,7 +292,7 @@ where
 }
 
 pub fn csv_header() -> &'static str {
-    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size;iter\n"
+    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size;iter;extr_time\n"
 }
 
 fn csv_line<L: Language + Display>(
@@ -300,10 +300,11 @@ fn csv_line<L: Language + Display>(
     threads: usize,
     expr: &RecExpr<L>,
     iter: usize,
+    extraction_time: std::time::Duration,
 ) -> String {
     // 0 threads == single threaded algorithm with no changes
     format!(
-        "{threads};{};{};{};{};{:?};{};{};{};{};{};{};{};{}\n",
+        "{threads};{};{};{};{};{:?};{};{};{};{};{};{};{};{};{}\n",
         report.total_time,
         report.search_time,
         report.apply_time,
@@ -316,7 +317,8 @@ fn csv_line<L: Language + Display>(
         report.rebuilds,
         "skipped",
         expr.len(),
-        iter
+        iter,
+        extraction_time.as_secs_f32()
     )
 }
 
@@ -388,7 +390,6 @@ where
     file.write_all(csv_header().as_bytes()).unwrap();
 
     for (ex_i, expr) in exprs.iter().enumerate() {
-        // println!("Testing {}", expr.pretty(120));
         println!("Expression {}/{}", ex_i + 1, exprs.len());
         println!("Singlethreaded");
         for avg_try in 1..=PAR_BENCH_AVG_TRIES {
@@ -411,8 +412,14 @@ where
                     .with_expr(&expr)
                     .run(rules_seq);
 
+                let start = std::time::Instant::now();
+                let res = Extractor::new(&runner.egraph, AstSize).find_best(runner.roots[0]);
+                let end = std::time::Instant::now();
+                let extr = end - start;
+                std::hint::black_box(res);
+
                 let report = runner.report();
-                let csv = csv_line(&report, 0, expr, avg_try);
+                let csv = csv_line(&report, 0, expr, avg_try, extr);
                 log += &csv;
                 file.write_all(csv.as_bytes()).unwrap();
             });
@@ -445,8 +452,14 @@ where
                         .with_expr(&expr)
                         .run_par(rules);
 
+                    let start = std::time::Instant::now();
+                    let res = Extractor::new_par(&runner.egraph, AstSize).find_best(runner.roots[0]);
+                    let end = std::time::Instant::now();
+                    let extr = end - start;
+                    std::hint::black_box(res);
+
                     let report = runner.report();
-                    let csv = csv_line(&report, th, expr, avg_try);
+                    let csv = csv_line(&report, th, expr, avg_try, extr);
                     log += &csv;
                     file.write_all(csv.as_bytes()).unwrap();
                 });

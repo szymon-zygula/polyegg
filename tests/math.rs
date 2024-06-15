@@ -585,7 +585,9 @@ fn random_exprs() {
 #[test]
 fn parallel_bench() {
     let mut exprs = Vec::new();
-    for length in [/*10, 100, 1000, 10_000, 100_000, 1_000_000,*/ 10_000_000] {
+    for length in [
+        10, 100, 1000, 10_000, /*100_000, 1_000_000,*/
+    ] {
         for seed in 0..3 {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let expr = random_expr(length, &mut rng);
@@ -602,10 +604,10 @@ fn parallel_bench() {
         &[
             1, 2, 3, 4, /*5,*/ 6, /*7,*/ 8, //10, 12, 14, 16, 20, 24, 28, 32,
         ],
-        "math-new-giant.csv"
+        "test.csv",
     );
+}
 
-    // std::fs::write(format!("math-big.csv"), log).unwrap();
 #[test]
 fn parallel_mem() {
     let length: usize = std::env::var("PE_LEN").unwrap().parse().unwrap();
