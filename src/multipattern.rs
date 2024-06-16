@@ -18,7 +18,7 @@ use crate::{egraph::EGraphChannel, *};
 /// [`MultiPattern`] implements both [`Searcher`] and [`Applier`].
 /// When searching a multipattern, the result ensures that
 /// patterns bound to the same variable are equivalent.
-/// When applying a multipattern, patterns bound a variable occuring in the
+/// When applying a multipattern, patterns bound a variable occurring in the
 /// searcher are unioned with that e-class.
 ///
 /// Multipatterns currently do not support the explanations feature.

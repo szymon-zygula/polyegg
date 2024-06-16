@@ -27,7 +27,7 @@ In `egg`, the main types associated with e-graphs are
 egraph are all user-defined.
 In particular, the e-nodes are elements of your [`Language`].
 [`EGraph`]s and [`EClass`]es are additionally parameterized by some
-[`Analysis`], abritrary data associated with each e-class.
+[`Analysis`], arbitrary data associated with each e-class.
 
 Many methods of [`EGraph`] deal with [`Id`]s, which represent e-classes.
 Because eclasses are frequently merged, many [`Id`]s will refer to the
@@ -801,7 +801,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// this function instead of [`union`](EGraph::union).
     ///
     /// Returns the id of the new eclass, along with
-    /// a `bool` indicating whether a union occured.
+    /// a `bool` indicating whether a union occurred.
     pub fn union_instantiations(
         &mut self,
         from_pat: &PatternAst<L>,
@@ -994,7 +994,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     .insert(class.id)
             };
 
-            // we can go through the ops in order to dedup them, becaue we
+            // we can go through the ops in order to dedup them, because we
             // just sorted them
             let mut nodes = class.nodes.iter();
             if let Some(mut prev) = nodes.next() {

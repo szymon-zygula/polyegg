@@ -292,7 +292,7 @@ where
 }
 
 pub fn csv_header() -> &'static str {
-    "threads;total_time;search_time;apply_time;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size;iter;extr_time\n"
+    "threads;total_time;search_time;apply_time;apply_multi;apply_deferred;rebuild_time;stop_reason;iterations;nodes;classes;memo;rebuilds;expression;expr_size;iter;extr_time\n"
 }
 
 fn csv_line<L: Language + Display>(
@@ -304,10 +304,12 @@ fn csv_line<L: Language + Display>(
 ) -> String {
     // 0 threads == single threaded algorithm with no changes
     format!(
-        "{threads};{};{};{};{};{:?};{};{};{};{};{};{};{};{};{}\n",
+        "{threads};{};{};{};{};{};{};{:?};{};{};{};{};{};{};{};{};{}\n",
         report.total_time,
         report.search_time,
-        report.apply_time,
+        report.apply_time.total,
+        report.apply_time.multithreaded,
+        report.apply_time.deferred,
         report.rebuild_time,
         report.stop_reason,
         report.iterations,

@@ -261,7 +261,7 @@ pub struct Report {
     pub rebuilds: usize,
     pub total_time: f64,
     pub search_time: f64,
-    pub apply_time: f64,
+    pub apply_time: ApplyTime,
     pub rebuild_time: f64,
 }
 
@@ -276,7 +276,9 @@ impl std::fmt::Display for Report {
         writeln!(f, "  Rebuilds: {}", self.rebuilds)?;
         writeln!(f, "  Total time: {}", self.total_time)?;
         writeln!(f, "    Search:  ({:.2}) {}", self.search_time / self.total_time, self.search_time)?;
-        writeln!(f, "    Apply:   ({:.2}) {}", self.apply_time / self.total_time, self.apply_time)?;
+        writeln!(f, "    Apply:   ({:.2}) {}", self.apply_time.total / self.total_time, self.apply_time.total)?;
+        writeln!(f, "    Apply (deferred): {}", self.apply_time.deferred)?;
+        writeln!(f, "    Apply (multithreaded): {}", self.apply_time.multithreaded)?;
         writeln!(f, "    Rebuild: ({:.2}) {}", self.rebuild_time / self.total_time, self.rebuild_time)?;
         Ok(())
     }
@@ -307,7 +309,7 @@ pub struct Iteration<IterData> {
     /// Seconds spent searching in this iteration.
     pub search_time: f64,
     /// Seconds spent applying rules in this iteration.
-    pub apply_time: f64,
+    pub apply_time: ApplyTime,
     /// Seconds spent [`rebuild`](EGraph::rebuild())ing
     /// the egraph in this iteration.
     pub rebuild_time: f64,
@@ -590,7 +592,14 @@ where
             memo_size: self.egraph.total_size(),
             rebuilds: self.iterations.iter().map(|i| i.n_rebuilds).sum(),
             search_time: self.iterations.iter().map(|i| i.search_time).sum(),
-            apply_time: self.iterations.iter().map(|i| i.apply_time).sum(),
+            apply_time: self.iterations.iter().map(|i| i.apply_time).fold(
+                ApplyTime::default(),
+                |a1, a2| ApplyTime {
+                    total: a1.total + a2.total,
+                    multithreaded: a1.multithreaded + a2.multithreaded,
+                    deferred: a1.deferred + a2.deferred,
+                },
+            ),
             rebuild_time: self.iterations.iter().map(|i| i.rebuild_time).sum(),
             total_time: self.iterations.iter().map(|i| i.total_time).sum(),
         }
@@ -747,7 +756,10 @@ where
             egraph_classes,
             hook_time,
             search_time,
-            apply_time,
+            apply_time: ApplyTime {
+                total: apply_time,
+                ..Default::default()
+            },
             rebuild_time,
             n_rebuilds,
             data: IterData::make(self),
@@ -802,6 +814,18 @@ where
     }
 }
 
+#[cfg_attr(feature = "serde-1", derive(serde::Serialize))]
+#[derive(Clone, Copy, Default, Debug)]
+/// Time spent on application
+pub struct ApplyTime {
+    /// Total time spent on application
+    pub total: f64,
+    /// Time spent running multiple threads if paraller applier was used
+    pub multithreaded: f64,
+    /// Time spent applying deferred changes if paraller applier was used
+    pub deferred: f64,
+}
+
 impl<L, N, IterData> ParallelRunner<L, N, IterData>
 where
     L: Language,
@@ -847,11 +871,13 @@ where
         matches: Vec<Vec<SearchMatches<L>>>,
         i: usize,
         result: &mut Result<(), StopReason>,
-    ) -> (IndexMap<Symbol, usize>, f64) {
+    ) -> (IndexMap<Symbol, usize>, ApplyTime) {
         if self.egraph.are_explanations_enabled() {
             panic!("Explanations are not supported with parallel rule application.");
         }
 
+        let mut multi_time = std::time::Duration::new(0, 0);
+        let mut deferred_time = std::time::Duration::new(0, 0);
         // How many times was each rule applied?
         let mut applied = IndexMap::default();
         let apply_time = Instant::now();
@@ -868,9 +894,9 @@ where
                 let total_matches: usize = ms.iter().map(|m| m.substs.len()).sum();
                 debug!("Applying {} {} times", rw.name, total_matches);
 
-                // TODO: replace with rayon task
                 let mut egraph_deferred_changes = None;
 
+                let multi_start = std::time::Instant::now();
                 rayon::scope(|s| {
                     s.spawn(|_| {
                         manager.manage();
@@ -883,8 +909,14 @@ where
                         drop(manager_channel);
                     });
                 });
+                let multi_end = std::time::Instant::now();
+                multi_time += multi_end - multi_start;
 
+                let deferred_start = std::time::Instant::now();
                 let actually_matched = egraph_deferred_changes.unwrap().apply(egraph);
+                let deferred_end = std::time::Instant::now();
+                deferred_time += deferred_end - deferred_start;
+
                 if actually_matched > 0 {
                     if let Some(count) = applied.get_mut(&rw.name) {
                         // Rule already applied some times: add the new count
@@ -901,9 +933,21 @@ where
         });
 
         let apply_time = apply_time.elapsed().as_secs_f64();
-        info!("Apply time: {}", apply_time);
+        let multi_time = multi_time.as_secs_f64();
+        let deferred_time = deferred_time.as_secs_f64();
 
-        (applied, apply_time)
+        info!("Apply time: {}", apply_time);
+        info!("Multithreaded apply time: {}", multi_time);
+        info!("Deferred apply time: {}", deferred_time);
+
+        (
+            applied,
+            ApplyTime {
+                total: apply_time,
+                multithreaded: multi_time,
+                deferred: deferred_time,
+            },
+        )
     }
 
     fn run_one_par(&mut self, rules: &[&ParallelRewrite<L, N>]) -> Iteration<IterData> {

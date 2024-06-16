@@ -433,7 +433,7 @@ where
         let ast = self.ast.as_ref();
 
         matches.par_iter().for_each(|mat| {
-            mat.substs.par_iter().for_each(|subst| {
+            mat.substs.iter().for_each(|subst| {
                 let mut egraph_channel = egraph_channel.clone();
                 let id = apply_pat_par_safe::<L, N>(ast, &mut egraph_channel, subst);
                 egraph_channel.flush_additions();
