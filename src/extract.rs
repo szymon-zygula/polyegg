@@ -1,8 +1,8 @@
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::sync::atomic::{self, AtomicBool};
-
-use rayon::prelude::*;
+use std::sync::RwLock;
 
 use crate::util::HashMap;
 use crate::{Analysis, EClass, EGraph, Id, Language, RecExpr};
@@ -241,7 +241,7 @@ where
     /// eclass.
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
         let costs = HashMap::default();
-        let mut extractor = Extractor {
+        let mut extractor = Self {
             costs,
             egraph,
             cost_function,
@@ -324,52 +324,80 @@ where
     }
 }
 
-impl<'a, CF, L, N> Extractor<'a, CF, L, N>
+/// Almost the same as [`Extractor`], but works in parallel.
+#[derive(Debug)]
+pub struct ParallelExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
+    cost_function: CF,
+    costs: HashMap<Id, RwLock<Option<(CF::Cost, L)>>>,
+    egraph: &'a EGraph<L, N>,
+}
+
+impl<'a, CF, L, N> ParallelExtractor<'a, CF, L, N>
 where
     CF: ParallelCostFunction<L>,
     L: Language,
     N: Analysis<L>,
 {
+    /// Create a new `ParallelExtractor` given an `EGraph` and a
+    /// `ParallelCostFunction`.
+    ///
+    /// The extraction does all the work on creation, so this function
+    /// performs the greedy search for cheapest representative of each
+    /// eclass.
+    pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
+        use std::iter::FromIterator;
+
+        let costs = HashMap::from_iter(egraph.classes().map(|c| (c.id, RwLock::new(None))));
+
+        let mut extractor = Self {
+            costs,
+            egraph,
+            cost_function,
+        };
+        extractor.find_costs();
+
+        extractor
+    }
+
     fn node_total_cost_par_safe(&self, node: &L) -> Option<CF::Cost> {
         let eg = &self.egraph;
-        let has_cost = |id| self.costs.contains_key(&eg.find(id));
+        let has_cost = |id| self.costs[&eg.find(id)].read().unwrap().is_some();
         if node.all(has_cost) {
             let costs = &self.costs;
-            let cost_f = |id| costs[&eg.find(id)].0.clone();
+            let cost_f = |id| {
+                costs[&eg.find(id)]
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .clone()
+            };
             Some(self.cost_function.cost_par_safe(node, cost_f))
         } else {
             None
         }
     }
 
-    fn find_costs_par(&mut self) {
-        let did_something = AtomicBool::new(true);
+    fn find_costs(&mut self) {
         // The threads only write to the variable, so relaxed ordering is sufficient
+        let did_something = AtomicBool::new(true);
+
         while did_something.load(atomic::Ordering::Relaxed) {
             did_something.store(false, atomic::Ordering::Relaxed);
 
-            let new_costs = self
-                .egraph
-                .par_classes()
-                .filter_map(|class| {
-                    let pass = self.make_pass_par(class);
-                    match (self.costs.get(&class.id), pass) {
-                        (None, Some(new)) => {
-                            did_something.store(true, atomic::Ordering::Relaxed);
-                            Some((class.id, new))
-                        }
-                        (Some(old), Some(new)) if new.0 < old.0 => {
-                            did_something.store(true, atomic::Ordering::Relaxed);
-                            Some((class.id, new))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect_vec_list();
+            self.egraph.par_classes().for_each(|class| {
+                let pass = self.make_pass(class);
+                let lock = &self.costs[&class.id];
+                let to_insert = match (lock.read().unwrap().as_ref(), pass) {
+                    (None, Some(new)) => new,
+                    (Some(old), Some(new)) if new.0 < old.0 => new,
+                    _ => return,
+                };
 
-            for (class_id, new_cost) in new_costs.into_iter().flatten() {
-                self.costs.insert(class_id, new_cost);
-            }
+                did_something.store(true, atomic::Ordering::Relaxed);
+                lock.write().unwrap().replace(to_insert);
+            });
         }
 
         for class in self.egraph.classes() {
@@ -383,7 +411,7 @@ where
         }
     }
 
-    fn make_pass_par(&self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, L)> {
+    fn make_pass(&self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, L)> {
         let (cost, node) = eclass
             .iter()
             .map(|n| (self.node_total_cost_par_safe(n), n))
@@ -392,22 +420,40 @@ where
         cost.map(|c| (c, node.clone()))
     }
 
-    /// Create a new parallel `Extractor` given an `EGraph` and a
-    /// `ParallelCostFunction`.
-    ///
-    /// The extraction does all the work on creation, so this function
-    /// performs the greedy search for cheapest representative of each
-    /// eclass.
-    pub fn new_par(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
-        let costs = HashMap::default();
-        let mut extractor = Extractor {
-            costs,
-            egraph,
-            cost_function,
-        };
-        extractor.find_costs_par();
+    /// Find the cheapest (lowest cost) represented `RecExpr` in the
+    /// given eclass.
+    pub fn find_best(&self, eclass: Id) -> (CF::Cost, RecExpr<L>) {
+        let (cost, root) = self.costs[&self.egraph.find(eclass)]
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
 
-        extractor
+        let expr = root.build_recexpr(|id| self.find_best_node(id).clone());
+        (cost, expr)
+    }
+
+    /// Find the cheapest e-node in the given e-class.
+    pub fn find_best_node(&self, eclass: Id) -> L {
+        self.costs[&self.egraph.find(eclass)]
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .1
+            .clone()
+    }
+
+    /// Find the cost of the term that would be extracted from this e-class.
+    pub fn find_best_cost(&self, eclass: Id) -> CF::Cost {
+        self.costs[&self.egraph.find(eclass)]
+            .try_read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .0
+            .clone()
     }
 }
 
@@ -461,14 +507,14 @@ mod tests {
                 assert_eq!(best_expr, start_expr);
             });
 
-        for threads in [1, 1, 2, 3, 4, 5, 6, 7, 8] {
+        for threads in [1, 2, 3, 4, 5, 6, 7, 8] {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap()
                 .install(|| {
                     let start = Instant::now();
-                    let extractor = Extractor::new_par(&runner.egraph, AstSize);
+                    let extractor = ParallelExtractor::new(&runner.egraph, AstSize);
                     let (_, best_expr) = extractor.find_best(runner.roots[0]);
                     let end = Instant::now();
 

@@ -453,7 +453,7 @@ where
                         .run_par(rules);
 
                     let start = std::time::Instant::now();
-                    let res = Extractor::new_par(&runner.egraph, AstSize).find_best(runner.roots[0]);
+                    let res = ParallelExtractor::new(&runner.egraph, AstSize).find_best(runner.roots[0]);
                     let end = std::time::Instant::now();
                     let extr = end - start;
                     std::hint::black_box(res);
