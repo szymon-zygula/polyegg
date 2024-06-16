@@ -348,10 +348,7 @@ where
         while did_something.load(atomic::Ordering::Relaxed) {
             did_something.store(false, atomic::Ordering::Relaxed);
 
-            // The allocation of new `HashMap` on each iteration could be avoided here,
-            // but it is not clear how to do this without using `unsafe` or some synchronization
-            // (`self.costs` is mutated in each iteration).
-            self.costs = self
+            let new_costs = self
                 .egraph
                 .par_classes()
                 .filter_map(|class| {
@@ -365,11 +362,14 @@ where
                             did_something.store(true, atomic::Ordering::Relaxed);
                             Some((class.id, new))
                         }
-                        (Some(old), _) => Some((class.id, old.clone())),
                         _ => None,
                     }
                 })
-                .collect();
+                .collect_vec_list();
+
+            for (class_id, new_cost) in new_costs.into_iter().flatten() {
+                self.costs.insert(class_id, new_cost);
+            }
         }
 
         for class in self.egraph.classes() {
@@ -385,7 +385,7 @@ where
 
     fn make_pass_par(&self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, L)> {
         let (cost, node) = eclass
-            .par_iter()
+            .iter()
             .map(|n| (self.node_total_cost_par_safe(n), n))
             .min_by(|a, b| cmp(&a.0, &b.0))
             .unwrap_or_else(|| panic!("Can't extract, eclass is empty: {:#?}", eclass));
@@ -431,39 +431,53 @@ mod tests {
         assert_eq!(best_expr, start);
     }
 
-    // #[test]
-    // fn parallel_extraction_benchmark() {
-    //     let rules: &[Rewrite<SymbolLang, ()>] =
-    //         &[rewrite!("explode"; "(meow ?a)" => "(meow (meow ?a ?a))")];
-    //
-    //     let start_expr = "(meow 42)".parse().unwrap();
-    //     print!("Running the runner... ");
-    //     use std::io::Write;
-    //     std::io::stdout().flush().unwrap();
-    //     let runner = ParallelRunner::default_par()
-    //         .with_iter_limit(2000)
-    //         .with_expr(&start_expr)
-    //         .run_par(rules);
-    //     println!("Done");
-    //     runner.print_report();
-    //
-    //     for threads in [1, 1, 2, 4, 8, 16] {
-    //         rayon::ThreadPoolBuilder::new()
-    //             .num_threads(threads)
-    //             .build()
-    //             .unwrap()
-    //             .install(|| {
-    //                 let start = Instant::now();
-    //                 let extractor = Extractor::new_par(&runner.egraph, AstSize);
-    //                 let (_, best_expr) = extractor.find_best(runner.roots[0]);
-    //                 let end = Instant::now();
-    //
-    //                 println!(
-    //                     "Threads: {threads}, Time [s]: {}",
-    //                     (end - start).as_secs_f64()
-    //                 );
-    //                 assert_eq!(best_expr, start_expr);
-    //             });
-    //     }
-    // }
+    #[test]
+    fn parallel_extraction_benchmark() {
+        let rules: &[Rewrite<SymbolLang, ()>] =
+            &[rewrite!("explode"; "(meow ?a)" => "(meow (meow ?a ?a))")];
+
+        let start_expr = "(meow 42)".parse().unwrap();
+        print!("Running the runner... ");
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        let runner = Runner::default()
+            .with_iter_limit(20000)
+            .with_expr(&start_expr)
+            .run(rules);
+        println!("Done");
+        runner.print_report();
+
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| {
+                let start = Instant::now();
+                let extractor = Extractor::new(&runner.egraph, AstSize);
+                let (_, best_expr) = extractor.find_best(runner.roots[0]);
+                let end = Instant::now();
+
+                println!("Threads: 0, Time [s]: {}", (end - start).as_secs_f64());
+                assert_eq!(best_expr, start_expr);
+            });
+
+        for threads in [1, 1, 2, 3, 4, 5, 6, 7, 8] {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let start = Instant::now();
+                    let extractor = Extractor::new_par(&runner.egraph, AstSize);
+                    let (_, best_expr) = extractor.find_best(runner.roots[0]);
+                    let end = Instant::now();
+
+                    println!(
+                        "Threads: {threads}, Time [s]: {}",
+                        (end - start).as_secs_f64()
+                    );
+                    assert_eq!(best_expr, start_expr);
+                });
+        }
+    }
 }
